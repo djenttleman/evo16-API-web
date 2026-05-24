@@ -1,0 +1,476 @@
+/* ── EVO 16 Remote — Audient Hardware Style ── */
+
+:root {
+  --bg: #080a0f;
+  --surface: #11141c;
+  --surface-hover: #161b26;
+  --border: #1e2330;
+  --border-light: #2a3040;
+  --text: #e4e8f0;
+  --text-bright: #ffffff;
+  --dim: #5c6478;
+  --dim-light: #788298;
+
+  --accent: #22c55e;
+  --accent-bright: #4ade80;
+  --accent-glow: rgba(34, 197, 94, 0.45);
+  --accent-soft: rgba(34, 197, 94, 0.12);
+
+  --danger: #e83030;
+  --danger-glow: rgba(232, 48, 48, 0.45);
+  --danger-soft: rgba(232, 48, 48, 0.15);
+
+  --knob-track: #333840;
+  --knob-fill: #22c55e;
+  --knob-dot: #ffffff;
+
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgba(34,197,94,0.03) 0%, transparent 60%),
+    linear-gradient(180deg, #0a0d14 0%, var(--bg) 100%);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+  min-height: 100dvh;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── App Container ── */
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 28px 20px 48px;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 36px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.brand-mark {
+  font-size: 18px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+h1 {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-bright);
+}
+
+.header-sub {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--dim);
+  margin-left: 2px;
+}
+
+/* ── Status Badge ── */
+.badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  padding: 6px 16px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: all 0.3s;
+}
+.badge.live {
+  color: #22c55e;
+  border-color: rgba(34,197,94,0.3);
+  background: rgba(34,197,94,0.08);
+  box-shadow: 0 0 12px rgba(34,197,94,0.12);
+}
+.badge.offline {
+  color: #f87171;
+  border-color: rgba(248,113,113,0.3);
+  background: rgba(248,113,113,0.08);
+  box-shadow: 0 0 12px rgba(248,113,113,0.10);
+}
+
+/* ── Section Headers ── */
+.section-header {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--dim-light);
+  padding: 14px 0 4px;
+  margin-top: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.section-header:first-child {
+  margin-top: 0;
+  padding-top: 0;
+}
+
+/* ── Rack Grid ── */
+.rack {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 22px 16px;
+  justify-items: center;
+}
+
+/* ── Channel Card ── */
+.channel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 14px 16px;
+  width: 100%;
+  max-width: 180px;
+  transition: border-color 0.25s, box-shadow 0.25s;
+  position: relative;
+}
+
+.channel:hover {
+  border-color: var(--border-light);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+}
+
+.channel::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 16px; right: 16px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-light), transparent);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.channel:hover::before {
+  opacity: 1;
+}
+
+/* ── Channel Label ── */
+.ch-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: var(--dim);
+}
+
+/* ── Knob ── */
+.knob-wrap {
+  position: relative;
+  width: 108px;
+  height: 108px;
+  cursor: grab;
+  -webkit-user-drag: none;
+}
+
+.knob-wrap:active { cursor: grabbing; }
+
+/* Outer glow ring when dragging */
+.knob-wrap::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: transparent;
+  transition: box-shadow 0.2s;
+  pointer-events: none;
+}
+.knob-wrap.dragging::before {
+  box-shadow:
+    0 0 28px var(--accent-glow),
+    0 0 56px rgba(34,197,94,0.15);
+}
+
+.knob-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4));
+}
+
+/* Knob background track — lighter gray, clearly visible */
+.knob-bg {
+  fill: none;
+  stroke: var(--knob-track);
+  stroke-width: 9;
+  opacity: 0.75;
+}
+
+/* Knob fill arc — electric blue */
+.knob-fill {
+  fill: none;
+  stroke: var(--knob-fill);
+  stroke-width: 9;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.08s ease-out;
+  filter: drop-shadow(0 0 6px var(--accent-glow));
+}
+.knob-wrap.dragging .knob-fill {
+  transition: none;
+  filter: drop-shadow(0 0 10px var(--accent-glow));
+}
+
+/* Position indicator dot — bright white */
+.knob-dot {
+  fill: var(--knob-dot);
+  transition: transform 0.08s ease-out;
+  filter: drop-shadow(0 0 3px rgba(255,255,255,0.5));
+}
+.knob-wrap.dragging .knob-dot {
+  transition: none;
+  filter: drop-shadow(0 0 5px rgba(255,255,255,0.7));
+}
+
+/* dB value in center */
+.knob-value {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  letter-spacing: -0.5px;
+  color: var(--text-bright);
+  z-index: 2;
+}
+
+.knob-value::after {
+  content: 'dB';
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  color: var(--dim-light);
+  text-align: center;
+  margin-top: -2px;
+}
+
+/* ── Action buttons row ── */
+.ch-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+}
+
+/* ── 48V Phantom Button ── */
+.btn-48v {
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 7px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  position: relative;
+  overflow: hidden;
+  min-width: 64px;
+}
+
+.btn-48v:hover {
+  color: #dc2626;
+  border-color: rgba(220,38,38,0.4);
+  background: rgba(220,38,38,0.06);
+}
+
+.btn-48v:active {
+  transform: scale(0.96);
+}
+
+/* 48V on state — red */
+.btn-48v.on {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+  box-shadow:
+    0 0 16px rgba(220,38,38,0.45),
+    inset 0 1px 0 rgba(255,255,255,0.2);
+  animation: phantom-pulse 2s ease-in-out infinite;
+}
+
+@keyframes phantom-pulse {
+  0%, 100% { box-shadow: 0 0 16px rgba(220,38,38,0.45), inset 0 1px 0 rgba(255,255,255,0.2); }
+  50%      { box-shadow: 0 0 24px rgba(220,38,38,0.55), inset 0 1px 0 rgba(255,255,255,0.3); }
+}
+
+/* ── Mute Button ── */
+.btn-mute {
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 7px 22px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  position: relative;
+  overflow: hidden;
+  min-width: 64px;
+}
+
+.btn-mute:hover {
+  color: var(--text);
+  border-color: var(--dim-light);
+  background: rgba(255,255,255,0.03);
+}
+
+.btn-mute:active {
+  transform: scale(0.96);
+}
+
+/* Muted state — white/gray heartbeat glow */
+.btn-mute.muted {
+  background: #e4e8f0;
+  color: #080a0f;
+  border-color: transparent;
+  box-shadow:
+    0 0 10px rgba(255,255,255,0.25),
+    inset 0 1px 0 rgba(255,255,255,0.6);
+  animation: mute-heartbeat 1.8s ease-in-out infinite;
+}
+
+@keyframes mute-heartbeat {
+  0%, 100% { box-shadow: 0 0 8px rgba(255,255,255,0.2), inset 0 1px 0 rgba(255,255,255,0.5); }
+  50%      { box-shadow: 0 0 20px rgba(255,255,255,0.5), inset 0 1px 0 rgba(255,255,255,0.85); }
+}
+
+/* ── Footer ── */
+footer {
+  margin-top: 36px;
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+.dim { color: var(--dim); }
+
+/* ═══════════════════════════════════════
+   RESPONSIVE BREAKPOINTS
+   ═══════════════════════════════════════ */
+
+/* Tablet: 3–4 columns */
+@media (max-width: 960px) {
+  .rack {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px 14px;
+  }
+  .app { padding: 24px 16px 40px; }
+  h1 { font-size: 24px; }
+}
+
+@media (max-width: 768px) {
+  .rack {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px 12px;
+  }
+  .channel {
+    max-width: 100%;
+    padding: 16px 10px 14px;
+  }
+  .knob-wrap {
+    width: 96px;
+    height: 96px;
+  }
+  .knob-value { font-size: 22px; }
+  .knob-value::after { font-size: 8px; }
+  header { margin-bottom: 28px; }
+}
+
+/* Mobile: 2 columns, compact */
+@media (max-width: 480px) {
+  .app { padding: 16px 10px 32px; }
+  .rack {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px 10px;
+  }
+  .channel {
+    padding: 14px 8px 12px;
+    border-radius: var(--radius-sm);
+  }
+  .knob-wrap {
+    width: 84px;
+    height: 84px;
+  }
+  .knob-value { font-size: 20px; }
+  .knob-value::after { font-size: 7px; margin-top: -3px; }
+  .knob-bg, .knob-fill { stroke-width: 7; }
+  .ch-label { font-size: 9px; letter-spacing: 1px; }
+  .btn-mute {
+    padding: 6px 18px;
+    font-size: 9px;
+  }
+  h1 { font-size: 20px; }
+  .header-sub { display: none; }
+  header {
+    margin-bottom: 22px;
+    padding-bottom: 14px;
+  }
+}
+
+/* Very small screens */
+@media (max-width: 360px) {
+  .knob-wrap {
+    width: 72px;
+    height: 72px;
+  }
+  .knob-value { font-size: 17px; }
+  .knob-bg, .knob-fill { stroke-width: 6; }
+  .channel { padding: 10px 6px 10px; gap: 6px; }
+}
+
+/* ═══════════════════════════════════════
+   Landscape / Wide screens
+   ═══════════════════════════════════════ */
+@media (min-width: 1200px) {
+  .rack {
+    grid-template-columns: repeat(5, 1fr);
+    gap: 28px 20px;
+  }
+  .channel { max-width: 200px; }
+  .knob-wrap {
+    width: 120px;
+    height: 120px;
+  }
+  .knob-value { font-size: 26px; }
+}

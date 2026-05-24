@@ -18,11 +18,11 @@ Control your Audient EVO 16 preamps and ADAT channels from any device on your lo
 
 ### Controls
 
-| Section | Channels | Type |
-| --- | --- | --- |
-| **ANALOG** | CH 1–8 | EVO 16 built-in preamps |
-| **ADAT 1** | CH 9–16 | Optical input 1 (e.g. Audient SP8) |
-| **ADAT 2** | CH 17–24 | Optical input 2 |
+| Section    | Channels | Type                               |
+| ---------- | -------- | ---------------------------------- |
+| **ANALOG** | CH 1–8   | EVO 16 built-in preamps            |
+| **ADAT 1** | CH 9–16  | Optical input 1 (e.g. Audient SP8) |
+| **ADAT 2** | CH 17–24 | Optical input 2                    |
 
 Per channel: **gain 0–50 dB** (knob), **mute**, and **48V phantom**.
 
@@ -35,12 +35,12 @@ Tablet  ──HTTP──►  FastAPI  ──JSON stdin──►  mac-evo16 (C)  
 
 ### Components
 
-| Layer | Technology | Role |
-| --- | --- | --- |
-| **USB driver** | `mac-evo16` (C, IOKit) | Direct USB control transfers. No root, no kernel extension. |
-| **API server** | FastAPI (Python, port 3000) | REST endpoints, serves web UI |
-| **Frontend** | Vanilla HTML/CSS/JS | Responsive knobs (0–50 dB), mute, 48V, 24 channels |
-| **IPC** | JSON over stdin/stdout | Backend ↔ C helper communication |
+| Layer          | Technology                  | Role                                                        |
+| -------------- | --------------------------- | ----------------------------------------------------------- |
+| **USB driver** | `mac-evo16` (C, IOKit)      | Direct USB control transfers. No root, no kernel extension. |
+| **API server** | FastAPI (Python, port 3000) | REST endpoints, serves web UI                               |
+| **Frontend**   | Vanilla HTML/CSS/JS         | Responsive knobs (0–50 dB), mute, 48V, 24 channels          |
+| **IPC**        | JSON over stdin/stdout      | Backend ↔ C helper communication                            |
 
 ---
 
@@ -48,27 +48,27 @@ Tablet  ──HTTP──►  FastAPI  ──JSON stdin──►  mac-evo16 (C)  
 
 ### Device Identification
 
-| Property | Value |
-| --- | --- |
-| Vendor ID | `0x2708` |
-| Product ID | `0x000A` |
-| Class | USB Audio Class 2.0 (UAC2) |
+| Property   | Value                      |
+| ---------- | -------------------------- |
+| Vendor ID  | `0x2708`                   |
+| Product ID | `0x000A`                   |
+| Class      | USB Audio Class 2.0 (UAC2) |
 
 ### Entity Map
 
-| Entity | Type | wIndex (hex) | Controls |
-| --- | --- | --- | --- |
+| Entity   | Type           | wIndex (hex)     | Controls                                  |
+| -------- | -------------- | ---------------- | ----------------------------------------- |
 | **EU58** | Extension Unit | `0x3A00` (14848) | Gain, Mute, Phantom — **all 24 channels** |
-| **FU11** | Feature Unit | `0x0B00` (2816) | Digital trim, stereo linking (CS=2) |
+| **FU11** | Feature Unit   | `0x0B00` (2816)  | Digital trim, stereo linking (CS=2)       |
 
 ### Control Transfers
 
 All commands use 4-byte USB control transfers:
 
-| Direction | bmRequestType | Description |
-| --- | --- | --- |
-| **Write** | `0x21` | Host → Device (SET_CUR) |
-| **Read** | `0xA1` | Device → Host (GET_CUR) |
+| Direction | bmRequestType | Description             |
+| --------- | ------------- | ----------------------- |
+| **Write** | `0x21`        | Host → Device (SET_CUR) |
+| **Read**  | `0xA1`        | Device → Host (GET_CUR) |
 
 **wValue** = `(CS << 8) | channel_index`
 
@@ -81,11 +81,11 @@ All commands use 4-byte USB control transfers:
 
 wIndex = `0x3A00` (14848)
 
-| Control | CS  | Data Bytes [0..3] | Mapping |
-| --- | --- | --- | --- |
-| **Gain** | 1   | `[0, dB, 0, 0]` | dB = 0..50 → 0..+50 dB (linear) |
-| **Mute** | 2   | `[m, 0, 0, 0]` | m=0 unmute, m=1 mute |
-| **Phantom** | 0   | `[p, 0, 0, 0]` | p=0 off, p=1 on (48V) |
+| Control     | CS  | Data Bytes [0..3] | Mapping                         |
+| ----------- | --- | ----------------- | ------------------------------- |
+| **Gain**    | 1   | `[0, dB, 0, 0]`   | dB = 0..50 → 0..+50 dB (linear) |
+| **Mute**    | 2   | `[m, 0, 0, 0]`    | m=0 unmute, m=1 mute            |
+| **Phantom** | 0   | `[p, 0, 0, 0]`    | p=0 off, p=1 on (48V)           |
 
 #### Gain Details
 
@@ -99,20 +99,20 @@ wIndex = `0x3A00` (14848)
 
 wIndex = `0x0B00` (2816)
 
-| Control | CS  | Data Bytes | Observed Behavior |
-| --- | --- | --- | --- |
-| **Mute** | ?   | `[136, 0, 0, 0]` | Toggles mute in some contexts |
+| Control  | CS  | Data Bytes         | Observed Behavior                        |
+| -------- | --- | ------------------ | ---------------------------------------- |
+| **Mute** | ?   | `[136, 0, 0, 0]`   | Toggles mute in some contexts            |
 | **CS=2** | 2   | `[0, value, 0, 0]` | Stereo linking between adjacent channels |
 
 > ⚠️ FU11 controls are still under investigation. Writing to FU11 CS=2 linked channels 1&2 unexpectedly.
 
 ### Channel Map
 
-| Range | Section | Type | Gain | Mute | Phantom |
-| --- | --- | --- | --- | --- | --- |
-| CH1–CH8 | ANALOG | Built-in preamps | ✅   | ✅   | ✅ real |
-| CH9–CH16 | ADAT 1 | Optical input 1 | ✅   | ✅   | ✅ write accepted* |
-| CH17–CH24 | ADAT 2 | Optical input 2 | ✅   | ✅   | ✅ write accepted* |
+| Range     | Section | Type             | Gain | Mute | Phantom           |
+| --------- | ------- | ---------------- |:----:|:----:|:-----------------:|
+| CH1–CH8   | ANALOG  | Built-in preamps | ✅    | ✅    | ✅ real            |
+| CH9–CH16  | ADAT 1  | Optical input 1  | ✅    | ✅    | ✅ write accepted* |
+| CH17–CH24 | ADAT 2  | Optical input 2  | ✅    | ✅    | ✅ write accepted* |
 
 *\* Phantom writes to ADAT channels are accepted by the protocol but may be no-ops without Audient SP8 or compatible ADAT preamps.*
 
@@ -134,12 +134,12 @@ Commands: `get_cur`, `set_cur`, `quit`.
 
 Base URL: `http://localhost:3000`
 
-| Method | Endpoint | Body | Response | Description |
-| --- | --- | --- | --- | --- |
-| GET | `/api/status` | —   | `{device, inputs[], outputs[]}` | Full state (24 channels) |
-| POST | `/api/gain/{ch}` | `{"db": 35}` | `{channel, gain, status}` | Set gain 0–50 dB |
-| POST | `/api/mute/{ch}` | `{"muted": true}` | `{channel, muted, status}` | Mute toggle |
-| POST | `/api/phantom/{ch}` | `{"on": true}` | `{channel, phantom, status}` | 48V toggle |
+| Method | Endpoint            | Body              | Response                        | Description              |
+| ------ | ------------------- | ----------------- | ------------------------------- | ------------------------ |
+| GET    | `/api/status`       | —                 | `{device, inputs[], outputs[]}` | Full state (24 channels) |
+| POST   | `/api/gain/{ch}`    | `{"db": 35}`      | `{channel, gain, status}`       | Set gain 0–50 dB         |
+| POST   | `/api/mute/{ch}`    | `{"muted": true}` | `{channel, muted, status}`      | Mute toggle              |
+| POST   | `/api/phantom/{ch}` | `{"on": true}`    | `{channel, phantom, status}`    | 48V toggle               |
 
 Channel range: 1–24.
 
@@ -158,14 +158,14 @@ Channel range: 1–24.
 
 ### Visual Design
 
-| Element | Color | Notes |
-| --- | --- | --- |
-| Knob fill | `#22c55e` (green) | 300° sweep, dasharray-based |
-| Knob track | `#333840` (gray) | Visible against dark bg |
-| Dot | `#ffffff` (white) | Position indicator |
-| 48V ON | `#dc2626` (red) | Amber-red glow pulse |
-| Mute ON | `#e4e8f0` (white) | Glow-only heartbeat |
-| Background | `#080a0f` | Dark, green radial gradient |
+| Element    | Color             | Notes                       |
+| ---------- | ----------------- | --------------------------- |
+| Knob fill  | `#22c55e` (green) | 300° sweep, dasharray-based |
+| Knob track | `#333840` (gray)  | Visible against dark bg     |
+| Dot        | `#ffffff` (white) | Position indicator          |
+| 48V ON     | `#dc2626` (red)   | Amber-red glow pulse        |
+| Mute ON    | `#e4e8f0` (white) | Glow-only heartbeat         |
+| Background | `#080a0f`         | Dark, green radial gradient |
 
 ### Accessibility
 
@@ -279,11 +279,11 @@ Control remoto web para la interfaz de audio **Audient EVO 16**. Controla los 8 
 
 ### ¿Qué controla?
 
-| Sección | Canales | Tipo |
-| --- | --- | --- |
-| **ANALOG** | CH 1–8 | Preamplificadores internos del EVO 16 |
-| **ADAT 1** | CH 9–16 | Entrada óptica 1 (ej. Audient SP8) |
-| **ADAT 2** | CH 17–24 | Entrada óptica 2 |
+| Sección    | Canales  | Tipo                                  |
+| ---------- | -------- | ------------------------------------- |
+| **ANALOG** | CH 1–8   | Preamplificadores internos del EVO 16 |
+| **ADAT 1** | CH 9–16  | Entrada óptica 1 (ej. Audient SP8)    |
+| **ADAT 2** | CH 17–24 | Entrada óptica 2                      |
 
 Cada canal: **ganancia 0–50 dB** (knob), **mute**, y **48V phantom**.
 
