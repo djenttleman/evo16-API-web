@@ -9,7 +9,7 @@ const START_ANGLE = 210;            // 0 dB = 7 o'clock (210° clockwise from to
 const KNOB_R = 42;           // SVG circle radius
 const KNOB_CIRC = 2 * Math.PI * KNOB_R;   // ~263.9
 
-let state = [];              // {ch, gain, mute, phantom}
+let state = [];              // {ch, gain, mute, phantom, instrument}
 let knobEls = new Map();    // ch → { wrap, fill, dot, valEl }
 
 // ── Global: update visual for a channel ──
@@ -56,6 +56,7 @@ function buildRack() {
       </div>
       <div class="ch-actions">
         <button class="btn-48v" data-ch="${ch}">48V</button>
+        ${ch <= 2 ? '<button class="btn-instr" data-ch="' + ch + '">INSTR</button>' : ''}
         <button class="btn-mute" data-ch="${ch}">MUTE</button>
       </div>
     `;
@@ -65,6 +66,7 @@ function buildRack() {
   bindKnobs();
   bindMutes();
   bindPhantoms();
+  bindInstruments();
 }
 
 // ── Knob drag ──
@@ -179,6 +181,30 @@ function bindPhantoms() {
   });
 }
 
+// ── Instrument buttons (CH1-2 only) ──
+function bindInstruments() {
+  document.querySelectorAll('.btn-instr').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ch = +btn.dataset.ch;
+      const entry = state.find(s => s.ch === ch);
+      if (!entry) return;
+      const newInstr = !entry.instrument;
+      try {
+        const r = await fetch(`${API}/instrument/${ch}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ on: newInstr }),
+        });
+        if (r.ok) {
+          entry.instrument = newInstr;
+          btn.classList.toggle('on', newInstr);
+          btn.textContent = newInstr ? 'INSTR' : 'INSTR';
+        }
+      } catch (err) { /* ignore */ }
+    });
+  });
+}
+
 // ── Poll device status ──
 async function poll() {
   try {
@@ -213,6 +239,13 @@ async function poll() {
         phantomBtn.classList.toggle('on', inp.phantom);
         phantomBtn.textContent = inp.phantom ? '48V' : '48V';
       }
+      // Update instrument button (CH1-2 only)
+      const instrBtn = document.querySelector(`.btn-instr[data-ch="${inp.channel}"]`);
+      if (instrBtn) {
+        const hasInstr = inp.instrument !== undefined ? inp.instrument : false;
+        instrBtn.classList.toggle('on', hasInstr);
+        instrBtn.textContent = hasInstr ? 'INSTR' : 'INSTR';
+      }
     }
 
     // Sync local state
@@ -221,6 +254,7 @@ async function poll() {
       gain: Math.round(i.gain),
       mute: i.mute,
       phantom: i.phantom,
+      instrument: i.instrument !== undefined ? i.instrument : false,
     }));
   } catch (err) {
     const badge = document.getElementById('status-badge');

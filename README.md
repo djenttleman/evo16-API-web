@@ -241,6 +241,13 @@ evo16-web/
 - 48V writes to ADAT channels (9–24) are forwarded correctly to SP8 preamps.
 - Requires proper clock configuration (see [Verified Setup](#verified-setup) above).
 
+### Instrument Mode (DI / High-Z) — ❌ PENDING
+
+- **Status**: NOT supported via USB GET_CUR/SET_CUR
+- **Cause**: Instrument mode uses a vendor-specific control transfer (bmRequestType 0x40) not visible in the UAC2 entity space. EU58 CS=5 accepts writes but does not toggle the hardware.
+- **Workaround**: Press the physical INSTR button on the EVO 16 front panel for CH1/CH2.
+- **Full research**: [instrument-mode-research.md](dev/instrument-mode-research.md)
+
 ### Core Audio / Aggregate Devices
 
 - The EVO 16 appears as a 24-in/24-out audio interface in macOS.
@@ -336,6 +343,7 @@ Tablet ──HTTP──► FastAPI ──stdin──► mac-evo16 (C) ──IOKi
 
 - **Ganancia negativa (-8 a -1 dB)**: el microcontrolador del EVO 16 rechaza valores negativos por USB. Solo se puede desde la perilla física.
 - **FU11 (digital trim)**: mapeo incompleto. CS=2 controla stereo linking, no atenuación digital.
+- **Modo Instrumento (DI / alta impedancia)**: ❌ PENDIENTE. El EVO 16 usa un comando USB propietario (vendor-specific) que no es visible en el espacio UAC2 estándar. Solo funciona desde el botón físico del panel frontal. Ver [investigación completa](dev/instrument-mode-research.md).
 
 ### Construir desde fuente
 

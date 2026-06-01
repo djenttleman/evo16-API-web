@@ -331,6 +331,51 @@ h1 {
   50%      { box-shadow: 0 0 24px rgba(220,38,38,0.55), inset 0 1px 0 rgba(255,255,255,0.3); }
 }
 
+/* ── Instrument/DI Button (CH1-2 only) ── */
+.btn-instr {
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  position: relative;
+  overflow: hidden;
+  min-width: 56px;
+}
+
+.btn-instr:hover {
+  color: #f59e0b;
+  border-color: rgba(245,158,11,0.4);
+  background: rgba(245,158,11,0.06);
+}
+
+.btn-instr:active {
+  transform: scale(0.96);
+}
+
+/* Instrument on state — amber/orange */
+.btn-instr.on {
+  background: #f59e0b;
+  color: #080a0f;
+  border-color: #f59e0b;
+  box-shadow:
+    0 0 14px rgba(245,158,11,0.40),
+    inset 0 1px 0 rgba(255,255,255,0.3);
+  animation: instr-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes instr-pulse {
+  0%, 100% { box-shadow: 0 0 14px rgba(245,158,11,0.40), inset 0 1px 0 rgba(255,255,255,0.3); }
+  50%      { box-shadow: 0 0 22px rgba(245,158,11,0.55), inset 0 1px 0 rgba(255,255,255,0.4); }
+}
+
 /* ── Mute Button ── */
 .btn-mute {
   border: none;

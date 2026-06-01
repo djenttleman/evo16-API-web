@@ -148,6 +148,32 @@ async def set_mute(channel: int, req: MuteRequest):
     return {"channel": channel, "muted": req.muted, "status": "ok"}
 
 
+# === EXPERIMENTAL API ===
+
+class InstrRequest(BaseModel):
+    on: bool
+
+@app.get("/api/instrument/{channel}")
+async def get_instrument(channel: int):
+    """Get instrument mode (CH1-2 only)."""
+    if channel not in (1, 2):
+        raise HTTPException(400, "Instrument mode only available on CH1-2")
+    if not service or not service._connected:
+        return {"channel": channel, "instrument": None, "status": "mock"}
+    result = service.get_instrument(channel)
+    return {"channel": channel, "instrument": result, "status": "ok"}
+
+@app.post("/api/instrument/{channel}")
+async def set_instrument(channel: int, req: InstrRequest):
+    """Set instrument/DI mode (CH1-2 only)."""
+    if channel not in (1, 2):
+        raise HTTPException(400, "Instrument mode only available on CH1-2")
+    if not service or not service._connected:
+        return {"channel": channel, "instrument": req.on, "status": "mock"}
+    service.set_instrument(channel, req.on)
+    return {"channel": channel, "instrument": req.on, "status": "ok"}
+
+
 # === Serve frontend ===
 
 def _get_web_dir() -> Path:

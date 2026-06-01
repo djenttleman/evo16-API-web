@@ -253,9 +253,16 @@ class Evo16Service:
                 phantom = self.get_phantom(ch)
             except Exception:
                 phantom = False
-            status["inputs"].append({
+            entry = {
                 "channel": ch, "gain": gain, "mute": mute, "phantom": phantom,
-            })
+            }
+            # Instrument mode (experimental, CH1-2 only)
+            if ch <= 2:
+                try:
+                    entry["instrument"] = self.get_instrument(ch)
+                except Exception:
+                    entry["instrument"] = None
+            status["inputs"].append(entry)
         for pair in range(5):
             status["outputs"].append({
                 "pair": pair + 1, "mute": False,
@@ -268,3 +275,54 @@ class Evo16Service:
     #  These are NOT covered by verified protocol constants.
     #  Mark clearly: status, what it controls, what hardware tested.
     # ════════════════════════════════════════════════════════════
+
+    # ── INSTRUMENT MODE (CS=5, CH 1-2 only) ────────────
+    # Status: PROBED — writes confirmed with 8-byte payload, pending physical verification
+    # HW:     EVO 16 front TS jacks (CH1, CH2)
+    # Desc:   High-impedance DI mode for guitars/basses (XLR/TRS combo jack switching)
+    # Proto:  EU58 CS=5, 8 bytes [flag, 0, 0, 0, 0, 0, 0, 0]
+    #         flag = 0x01 (instrument ON/high-Z), 0x00 (line/mic), 0xFF (alternate state)
+    # Note:   MUST send full 8 bytes. 4-byte writes are accepted but may not commit.
+    # Ref:    DESIGN.md EU58 CS=5 "may control input impedance/gain staging"
+    #          https://audient.com/products/audio-interfaces/evo16
+
+    INSTR_CS     = 5
+    INSTR_ENTITY = VERIFIED_EU58  # 0x3A00
+    INSTR_ON     = 1
+    INSTR_OFF    = 0
+    INSTR_SIZE   = 8              # Payload size: 8 bytes required
+
+    def get_instrument(self, channel: int) -> bool | None:
+        """Read instrument mode. Only valid for CH 1-2.
+
+        Returns True (instrument/DI), False (line), or None if not supported.
+        """
+        if channel not in (1, 2):
+            return None
+        wValue = (self.INSTR_CS << 8) | (channel - 1)
+        r = self._send({
+            "type": "get_cur",
+            "wValue": wValue,
+            "wIndex": self.INSTR_ENTITY,
+            "length": self.INSTR_SIZE,
+        })
+        return bool(bytes(r["data"])[0] == self.INSTR_ON)
+
+    def set_instrument(self, channel: int, on: bool) -> bool:
+        """Set instrument mode. Only valid for CH 1-2.
+
+        Returns True on success, False if channel not supported.
+        """
+        if channel not in (1, 2):
+            return False
+        wValue = (self.INSTR_CS << 8) | (channel - 1)
+        data = [self.INSTR_ON if on else self.INSTR_OFF, 0, 0, 0, 0, 0, 0, 0]
+        r = self._send({
+            "type": "set_cur",
+            "wValue": wValue,
+            "wIndex": self.INSTR_ENTITY,
+            "data": data,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return True
