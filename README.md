@@ -26,6 +26,23 @@ Control your Audient EVO 16 preamps and ADAT channels from any device on your lo
 
 Per channel: **gain 0–50 dB** (knob), **mute**, and **48V phantom**.
 
+### Verified Setup
+
+> Tested with Audient SP8 on both ADAT 1 and ADAT 2. All preamp controls
+> (gain 0–50 dB and 48V phantom) work bidirectionally over ADAT.
+
+| Device | Setting | Value |
+|--------|---------|-------|
+| **macOS** | Sample Rate | 48 kHz |
+| **EVO 16** | Clock Source | Internal |
+| **SP8** | Sample Rate | AUTO |
+| **SP8** | Clock Source | Digital |
+| **SP8** | World Clock Termination | OFF |
+
+*Connect the SP8 via ADAT optical cable to the EVO 16. Set the EVO 16 as
+clock master (Internal), and the SP8 as clock slave (Digital). The SP8's
+World Clock Termination must be OFF for bidirectional control to work.*
+
 ### Architecture
 
 ```
@@ -220,8 +237,9 @@ evo16-web/
 
 ### ADAT Phantom (48V)
 
-- **Status**: Protocol accepts writes for channels 9–24
-- **Pending**: Verify with Audient SP8 or other ADAT preamps that support remote 48V control.
+- **Status**: Verified with Audient SP8 on ADAT 1 and ADAT 2.
+- 48V writes to ADAT channels (9–24) are forwarded correctly to SP8 preamps.
+- Requires proper clock configuration (see [Verified Setup](#verified-setup) above).
 
 ### Core Audio / Aggregate Devices
 
@@ -287,6 +305,23 @@ Control remoto web para la interfaz de audio **Audient EVO 16**. Controla los 8 
 
 Cada canal: **ganancia 0–50 dB** (knob), **mute**, y **48V phantom**.
 
+### Configuración verificada
+
+> Probado con Audient SP8 en ADAT 1 y ADAT 2. Todos los controles de
+> preamplificador (ganancia 0–50 dB y 48V phantom) funcionan bidireccionalmente.
+
+| Dispositivo | Ajuste | Valor |
+|-------------|--------|-------|
+| **macOS** | Frecuencia de muestreo | 48 kHz |
+| **EVO 16** | Fuente de reloj | Internal |
+| **SP8** | Frecuencia de muestreo | AUTO |
+| **SP8** | Fuente de reloj | Digital |
+| **SP8** | World Clock Termination | OFF |
+
+*Conecta el SP8 vía cable óptico ADAT al EVO 16. Configura el EVO 16 como
+maestro de reloj (Internal) y el SP8 como esclavo (Digital). La terminación
+World Clock del SP8 debe estar en OFF para que el control bidireccional funcione.*
+
 ### Cómo funciona
 
 ```
@@ -300,7 +335,6 @@ Tablet ──HTTP──► FastAPI ──stdin──► mac-evo16 (C) ──IOKi
 ### Lo que falta (pendiente)
 
 - **Ganancia negativa (-8 a -1 dB)**: el microcontrolador del EVO 16 rechaza valores negativos por USB. Solo se puede desde la perilla física.
-- **Phantom en ADAT**: el protocolo acepta la escritura, pero falta verificar con preamps ADAT como el Audient SP8.
 - **FU11 (digital trim)**: mapeo incompleto. CS=2 controla stereo linking, no atenuación digital.
 
 ### Construir desde fuente
