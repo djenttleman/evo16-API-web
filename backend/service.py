@@ -10,6 +10,7 @@ class Evo16Service:
     """Manages the mac-evo16 helper process with the CORRECT EU58 protocol."""
 
     EU58 = 0x3A00
+    FU11 = 0x0B00  # ADAT mute, digital trim, stereo link
 
     def __init__(self, helper_path: str | None = None):
         self._lock = threading.Lock()
@@ -106,25 +107,27 @@ class Evo16Service:
         return db
 
     # ============================================================
-    #  MUTE — EU58 CS=2, 4 bytes [0/1, 0, 0, 0]
+    #  MUTE — ANALOG: EU58 CS=2 | ADAT (>8): FU11 CS=2
     # ============================================================
     def get_mute(self, channel: int) -> bool:
         wValue = (2 << 8) | (channel - 1)
+        wIndex = self.FU11 if channel > 8 else self.EU58
         r = self._send({
             "type": "get_cur",
             "wValue": wValue,
-            "wIndex": self.EU58,
+            "wIndex": wIndex,
             "length": 4,
         })
         return bool(bytes(r["data"])[0])
 
     def set_mute(self, channel: int, muted: bool) -> None:
         wValue = (2 << 8) | (channel - 1)
+        wIndex = self.FU11 if channel > 8 else self.EU58
         data = [1 if muted else 0, 0, 0, 0]
         r = self._send({
             "type": "set_cur",
             "wValue": wValue,
-            "wIndex": self.EU58,
+            "wIndex": wIndex,
             "data": data,
         })
         if "error" in r:
