@@ -1,0 +1,30 @@
+# Hermes / Claude
+.claude/
+.claude-*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Build artifacts (PyInstaller)
+dist/
+build/
+*.spec
+
+# Environment
+.env
+.env.*
+
+# IDE
+.mypy_cache/
+.pyright/
+.pytest_cache/
+.coverage
+
+# macOS
+.DS_Store
+*.
