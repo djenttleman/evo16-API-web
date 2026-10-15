@@ -153,11 +153,15 @@ async def set_mute(channel: int, req: MuteRequest):
 class InstrRequest(BaseModel):
     on: bool
 
+# Canales con hardware de instrumento/DI: locales 1-2 + ADAT 9-10 (ADAT1) y 17-18 (ADAT2).
+# Debe coincidir con Evo16Service.INSTR_CHANNELS.
+INSTRUMENT_CHANNELS = (1, 2, 9, 10, 17, 18)
+
 @app.get("/api/instrument/{channel}")
 async def get_instrument(channel: int):
-    """Get instrument mode (CH1-2 only)."""
-    if channel not in (1, 2):
-        raise HTTPException(400, "Instrument mode only available on CH1-2")
+    """Get instrument mode. Canales con hardware de DI: 1-2 (locales), 9-10 y 17-18 (ADAT)."""
+    if channel not in INSTRUMENT_CHANNELS:
+        raise HTTPException(400, f"Instrument mode only available on channels {INSTRUMENT_CHANNELS}")
     if not service or not service._connected:
         return {"channel": channel, "instrument": None, "status": "mock"}
     result = service.get_instrument(channel)
@@ -165,9 +169,9 @@ async def get_instrument(channel: int):
 
 @app.post("/api/instrument/{channel}")
 async def set_instrument(channel: int, req: InstrRequest):
-    """Set instrument/DI mode (CH1-2 only)."""
-    if channel not in (1, 2):
-        raise HTTPException(400, "Instrument mode only available on CH1-2")
+    """Set instrument/DI mode. Ver service.py: CS=4 con read-modify-write del bit 1."""
+    if channel not in INSTRUMENT_CHANNELS:
+        raise HTTPException(400, f"Instrument mode only available on channels {INSTRUMENT_CHANNELS}")
     if not service or not service._connected:
         return {"channel": channel, "instrument": req.on, "status": "mock"}
     service.set_instrument(channel, req.on)

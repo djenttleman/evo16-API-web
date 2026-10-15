@@ -30,7 +30,10 @@ VERIFIED_GAIN_CS           = 1       # Control Selector
 VERIFIED_GAIN_PAYLOAD_SIZE = 4       # bytes
 VERIFIED_GAIN_BYTE_OFFSET  = 1       # byte index for dB value (0=first)
 VERIFIED_GAIN_MIN_DB       = 0
-VERIFIED_GAIN_MAX_DB       = 50
+VERIFIED_GAIN_MAX_DB       = 58      # medido 2026-10-15: el firmware CLAMPEA en 58
+# El byte del cable es la ganancia física 0..58 (sin signo). La UI de EVO Control
+# muestra −8..+50 con referencia de 8 dB ⇒ byte = valor_UI + 8. Escribir >58 (incluido
+# 248/0xF8) NO pone el mínimo: el firmware lo lleva al MÁXIMO.
 VERIFIED_GAIN_ENTITY       = VERIFIED_EU58  # wIndex
 
 # ── PHANTOM / 48V (verified on CH1-24, analog + ADAT1 + ADAT2) ──
@@ -280,48 +283,55 @@ class Evo16Service:
     # Status: PROBED — writes confirmed with 8-byte payload, pending physical verification
     # HW:     EVO 16 front TS jacks (CH1, CH2)
     # Desc:   High-impedance DI mode for guitars/basses (XLR/TRS combo jack switching)
-    # Proto:  EU58 CS=5, 8 bytes [flag, 0, 0, 0, 0, 0, 0, 0]
-    #         flag = 0x01 (instrument ON/high-Z), 0x00 (line/mic), 0xFF (alternate state)
-    # Note:   MUST send full 8 bytes. 4-byte writes are accepted but may not commit.
-    # Ref:    DESIGN.md EU58 CS=5 "may control input impedance/gain staging"
-    #          https://audient.com/products/audio-interfaces/evo16
+    # ── INSTRUMENTO / DI (EU58 CS=4) — VERIFICADO EN HARDWARE 2026-10-15 ──
+    # Proto:  EU58 CS=4, 4 bytes. Es un BITMASK por canal: **bit 1 = instrumento/DI**.
+    #         Se escribe SIEMPRE el word completo (leer → modificar el bit → escribir),
+    #         porque los otros bits llevan otro estado del canal (p. ej. Mic 4 = 0b101).
+    # Valor con DI activo = 2 (bit 1). Coincide con el campo `instrument` del
+    # state.xml de EVO Control, que es la fuente de verdad del modelo de la app.
+    # ⚠️  La implementación anterior (CS=5 con 8 bytes) era INERTE: el equipo aceptaba
+    #     la escritura y devolvía eco, pero NO cambiaba el modo DI. Medido el
+    #     2026-10-15 con el servicio detenido y lectura directa del registro.
+    # Hardware con DI: locales 1-2, y vía ADAT 9-10 (ADAT1) y 17-18 (ADAT2).
+    INSTR_CS        = 4
+    INSTR_ENTITY    = VERIFIED_EU58  # 0x3A00
+    INSTR_BIT       = 1              # bit 1 del bitmask = instrumento / DI
+    INSTR_SIZE      = 4              # payload UAC2 estándar (NO 8)
+    INSTR_CHANNELS  = (1, 2, 9, 10, 17, 18)
 
-    INSTR_CS     = 5
-    INSTR_ENTITY = VERIFIED_EU58  # 0x3A00
-    INSTR_ON     = 1
-    INSTR_OFF    = 0
-    INSTR_SIZE   = 8              # Payload size: 8 bytes required
-
-    def get_instrument(self, channel: int) -> bool | None:
-        """Read instrument mode. Only valid for CH 1-2.
-
-        Returns True (instrument/DI), False (line), or None if not supported.
-        """
-        if channel not in (1, 2):
-            return None
-        wValue = (self.INSTR_CS << 8) | (channel - 1)
+    def _read_flags(self, channel: int) -> int:
+        """Lee el bitmask de CS=4 (4 bytes) del canal indicado (1-based)."""
         r = self._send({
             "type": "get_cur",
-            "wValue": wValue,
+            "wValue": (self.INSTR_CS << 8) | (channel - 1),
             "wIndex": self.INSTR_ENTITY,
             "length": self.INSTR_SIZE,
         })
-        return bool(bytes(r["data"])[0] == self.INSTR_ON)
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return int(bytes(r["data"])[0])
+
+    def get_instrument(self, channel: int) -> bool | None:
+        """Lee el modo instrumento. True = DI activo, None si el canal no tiene DI."""
+        if channel not in self.INSTR_CHANNELS:
+            return None
+        return bool(self._read_flags(channel) & (1 << self.INSTR_BIT))
 
     def set_instrument(self, channel: int, on: bool) -> bool:
-        """Set instrument mode. Only valid for CH 1-2.
+        """Fija el modo instrumento con READ-MODIFY-WRITE (preserva los otros bits).
 
-        Returns True on success, False if channel not supported.
+        Devuelve True si se aplicó, False si el canal no tiene hardware de DI.
         """
-        if channel not in (1, 2):
+        if channel not in self.INSTR_CHANNELS:
             return False
-        wValue = (self.INSTR_CS << 8) | (channel - 1)
-        data = [self.INSTR_ON if on else self.INSTR_OFF, 0, 0, 0, 0, 0, 0, 0]
+        mask = 1 << self.INSTR_BIT
+        cur = self._read_flags(channel)
+        nuevo = (cur | mask) if on else (cur & ~mask)
         r = self._send({
             "type": "set_cur",
-            "wValue": wValue,
+            "wValue": (self.INSTR_CS << 8) | (channel - 1),
             "wIndex": self.INSTR_ENTITY,
-            "data": data,
+            "data": [nuevo, 0, 0, 0],
         })
         if "error" in r:
             raise RuntimeError(r["error"])
