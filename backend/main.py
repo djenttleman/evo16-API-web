@@ -2,6 +2,7 @@
 
 import sys
 import os
+import tempfile
 import webbrowser
 import subprocess
 from pathlib import Path
@@ -28,28 +29,115 @@ from backend.presets import (
 app = FastAPI(title="EVO 16 Remote", version="1.0.0")
 
 
-def _cleanup_conflicts():
-    """Kill any process using port 3000 and any lingering mac-evo16 helpers."""
-    import signal
-    killed = False
-    # Kill process on port 3000
+PID_FILE = Path(tempfile.gettempdir()) / "evo16-remote.pid"
+SERVER_PORT = 3000
+
+
+def _cmdline(pid: int) -> str:
+    """Línea de comandos de un pid (para no matar un proceso ajeno si el pid se recicló)."""
     try:
-        r = subprocess.run(["lsof", "-ti", ":3000"], capture_output=True, text=True, timeout=5)
-        for pid in r.stdout.strip().split():
-            try:
-                os.kill(int(pid), signal.SIGKILL)
-                killed = True
-            except Exception:
-                pass
+        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _kill_pid(pid: int, why: str, require: str | None = None) -> bool:
+    """Cierra un proceso: SIGTERM y, si no muere en ~3 s, SIGKILL.
+
+    Cerrar limpio importa: el server libera el USB (helper mac-evo16) recién en su shutdown, así
+    que un SIGKILL seco deja el dispositivo tomado y la instancia nueva no puede arrancar.
+    `require`: si se pasa, sólo mata si esa cadena aparece en la línea de comandos del pid
+    (evita matar un proceso cualquiera por un pid reciclado).
+    """
+    import signal
+    import time
+
+    if pid <= 0 or pid == os.getpid() or not _pid_alive(pid):
+        return False
+    if require and require not in _cmdline(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        return False
+    for _ in range(30):
+        time.sleep(0.1)
+        if not _pid_alive(pid):
+            print(f"🧹 {why} (pid {pid}) cerrada limpiamente")
+            return True
+    try:
+        os.kill(pid, signal.SIGKILL)
+        print(f"🧹 {why} (pid {pid}) no respondió a SIGTERM: SIGKILL")
     except Exception:
         pass
-    # Kill lingering mac-evo16 helpers
+    return True
+
+
+def _cleanup_conflicts() -> None:
+    """Deja SIEMPRE una sola instancia: mata las viejas antes de tomar el puerto.
+
+    Cuatro frentes, en orden:
+      1. el pid anotado en /tmp/evo16-remote.pid (la instancia anterior),
+      2. cualquier proceso escuchando en el puerto del server,
+      3. helpers mac-evo16 huérfanos (si el server murió mal, quedan con el USB tomado y hacen
+         fallar el arranque),
+      4. aviso si la app oficial EVO Control tiene el equipo (esa NO se mata: es del usuario).
+    """
+    import signal
+
+    # 1. la instancia anterior, si dejó su pid
     try:
+        if PID_FILE.is_file():
+            prev = int((PID_FILE.read_text().strip() or "0"))
+            _kill_pid(prev, "instancia anterior de evo16-remote", require="main.py")
+    except Exception:
+        pass
+
+    # 2. quien tenga el puerto (sea o no nuestro)
+    try:
+        r = subprocess.run(["lsof", "-ti", f":{SERVER_PORT}"],
+                           capture_output=True, text=True, timeout=5)
+        for pid in r.stdout.split():
+            _kill_pid(int(pid), f"proceso ocupando el puerto {SERVER_PORT}")
+    except Exception:
+        pass
+
+    # 3. helpers mac-evo16 sueltos
+    try:
+        r = subprocess.run(["pgrep", "-f", "mac-evo16"],
+                           capture_output=True, text=True, timeout=5)
+        for pid in r.stdout.split():
+            _kill_pid(int(pid), "helper mac-evo16 huérfano")
+        # resto que no haya respondido a SIGTERM
         subprocess.run(["pkill", "-9", "-f", "mac-evo16"], timeout=5)
     except Exception:
         pass
-    if killed:
-        print("🧹 Cleaned up previous instance (port 3000 was in use)")
+
+    # 4. la app oficial: avisar, nunca matar
+    try:
+        r = subprocess.run(["pgrep", "-f", "EVO.app/Contents/MacOS/EVO"],
+                           capture_output=True, text=True, timeout=5)
+        if r.stdout.strip():
+            print("⚠️  EVO Control está ABIERTA: es la dueña del USB. Cerrála para controlar el "
+                  "hardware (el server arranca igual, pero los controles van a fallar).")
+    except Exception:
+        pass
+
+    # Anotamos nuestro pid para que la próxima instancia nos encuentre
+    try:
+        PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
 
 # CORS for tablet access from LAN
 app.add_middleware(
