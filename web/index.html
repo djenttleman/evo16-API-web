@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 <title>EVO 16 Remote</title>
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 <div class="app">
@@ -23,12 +23,20 @@
     </select>
     <button id="preset-apply" class="pbtn">APLICAR</button>
     <button id="preset-save" class="pbtn accent">GUARDAR ESTADO</button>
+    <button id="preset-export" class="pbtn">EXPORTAR</button>
+    <button id="preset-import" class="pbtn">IMPORTAR</button>
     <button id="preset-delete" class="pbtn danger">BORRAR</button>
     <span id="preset-info" class="preset-info"></span>
+  </div>
+  <div class="mainvol">
+    <span class="presets-label">MAIN OUT</span>
+    <input id="main-volume" class="vol-range" type="range" min="0" max="100" step="1" value="0">
+    <span id="main-volume-val" class="vol-val">0 / 100</span>
+    <span class="vol-hint">misma escala que la pantalla del equipo (0 = −96 dB, 100 = 0 dB) · se manda en vivo al deslizar</span>
   </div>
   <div id="rack" class="rack"></div>
   <footer id="device-name" class="dim">—</footer>
 </div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

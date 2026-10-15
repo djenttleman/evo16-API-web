@@ -21,6 +21,8 @@ from backend.presets import (
     PRESETS_DIR,
     PresetError,
     delete as delete_preset,
+    export_preset,
+    import_preset,
     list_presets,
     load as load_preset,
     save as save_preset,
@@ -281,6 +283,27 @@ async def set_instrument(channel: int, req: InstrRequest):
 class LinkRequest(BaseModel):
     on: bool
 
+class VolumeRequest(BaseModel):
+    db: float
+
+# Volumen del MAIN MIX (ver service.py → MAIN_VOL_CS). Lo descubrió el desensamblado de
+# UacXUAudientMonitorController::setMainVolume y lo confirmó la perilla física del equipo.
+# Es un control que la app oficial NO expone: sólo se podía tocar con la perilla.
+@app.get("/api/main-volume")
+async def get_main_volume():
+    """Volumen del main mix en dB."""
+    if not service or not service._connected:
+        return {"mainVolume": None, "status": "mock"}
+    return {"mainVolume": service.get_main_volume(), "status": "ok"}
+
+@app.post("/api/main-volume")
+async def set_main_volume(req: VolumeRequest):
+    """Fija el volumen del main mix (dB, Q8.8 con signo)."""
+    if not service or not service._connected:
+        return {"mainVolume": req.db, "status": "mock"}
+    written = service.set_main_volume(req.db)
+    return {"mainVolume": written, "status": "ok"}
+
 # Link de par estéreo (ver service.py → LINK_CS; es CS=3 del EVO 16). El par de un canal es
 # (impar, impar+1): 1-2, 3-4, 5-6, … Con el par linkeado el FIRMWARE espeja el preamp (gain, DI),
 # así que el cliente NO necesita duplicar escrituras: le basta linkear y escribir en un lado.
@@ -312,6 +335,25 @@ async def get_presets():
     """Perfiles guardados + la carpeta donde viven los archivos."""
     return {"dir": str(PRESETS_DIR), "presets": list_presets()}
 
+class PresetPathRequest(BaseModel):
+    path: str                 # admite ~ ; el destino debe terminar en .json
+    overwrite: bool = False   # exportar nunca pisa un archivo existente sin esto
+
+class PresetImportRequest(BaseModel):
+    path: str
+    name: str | None = None   # opcional: con qué nombre entra al banco local
+
+# OJO con el orden: esta ruta va ANTES de /api/presets/{name}, si no "import" se toma como nombre.
+@app.post("/api/presets/import")
+async def import_preset_endpoint(req: PresetImportRequest):
+    """Trae al banco local un perfil desde un archivo de cualquier ubicación."""
+    try:
+        data = import_preset(req.path, req.name)
+    except PresetError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "name": data["name"], "channels": len(data["channels"]),
+            "from": str(req.path)}
+
 @app.get("/api/presets/{name}")
 async def get_preset(name: str):
     """Contenido completo de un perfil (para inspeccionarlo o editarlo a mano)."""
@@ -319,6 +361,15 @@ async def get_preset(name: str):
         return load_preset(name)
     except PresetError as e:
         raise HTTPException(400, str(e))
+
+@app.post("/api/presets/{name}/export")
+async def export_preset_endpoint(name: str, req: PresetPathRequest):
+    """Copia el perfil a la ubicación indicada, por ejemplo ~/Documents/sala-chica.json."""
+    try:
+        dst = export_preset(name, req.path, req.overwrite)
+    except PresetError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "name": name, "file": str(dst), "bytes": dst.stat().st_size}
 
 @app.post("/api/presets/{name}")
 async def save_preset_endpoint(name: str):

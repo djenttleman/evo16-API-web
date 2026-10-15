@@ -181,6 +181,8 @@ reinyectarlo cuando haga falta — por ejemplo al cambiar de escena.
 | GET | `/api/presets/{nombre}` | Contenido completo del perfil (JSON) |
 | POST | `/api/presets/{nombre}` | **Guarda el estado ACTUAL del equipo** como ese perfil (sobrescribe) |
 | POST | `/api/presets/{nombre}/apply` | **Inyecta** el perfil en el equipo |
+| POST | `/api/presets/{nombre}/export` | Copia el perfil a un archivo en la ubicación que se indique (`{"path": "~/Documents/sala.json", "overwrite": false}`) |
+| POST | `/api/presets/import` | Trae al banco local un perfil desde cualquier archivo (`{"path": "…", "name": "opcional"}`) |
 | DELETE | `/api/presets/{nombre}` | Borra el archivo del perfil |
 
 **Almacenamiento en archivos** (JSON, uno por perfil, editables a mano):
@@ -206,7 +208,28 @@ necesario porque al linkear el equipo unifica el valor del par: los valores fina
 escribirse después para que queden los del perfil.
 
 **UI**: la barra «PERFIL DE PREAMPS» sobre el rack permite elegir, `APLICAR`, `GUARDAR ESTADO`
-(captura el estado actual y lo guarda con el nombre que se escriba) y `BORRAR`.
+(captura el estado actual y lo guarda con el nombre que se escriba), `EXPORTAR` (a la ruta que se
+indique; nunca pisa un archivo existente salvo que se pida), `IMPORTAR` y `BORRAR`.
+
+## Volumen del main out (control que la app oficial NO expone)
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/api/main-volume` | Volumen del main mix en dB |
+| POST | `/api/main-volume` | `{"db": -20}` → fija el volumen |
+
+**Protocolo**: `MonitorController` (unidad `0x36`), **`CS=18`**, payload de **2 bytes**, entero
+**con signo** little-endian en **Q8.8** (`dB = raw / 256`). Lo reveló el desensamblado de
+`UacXUAudientMonitorController::setMainVolume` (`mov w2, #0x12` = 18, `fcvtzs w8, d0, #8` = ×256) y
+lo confirmó la **perilla física** del equipo: al bajarla el registro pasó de `[174,199]` (−56.3 dB) a
+`[0,160]` (−96.0 dB). Los volúmenes de CUE usan el mismo esquema en `CS=19` y siguientes.
+
+**Escala de la pantalla del equipo** (0–100, confirmada en hardware): `0 = −96 dB` y `100 = 0 dB`,
+lineal → `dB = (v − 100) × 0.96`. El slider de la UI usa esa misma escala y **manda el valor
+mientras se desliza** (throttle ~90 ms, siempre el último), así el equipo avanza en conjunto con el
+slider como si fuera la perilla.
+
+En `/api/status` el campo `mainVolume` trae el valor actual (una lectura extra por poll).
 
 Channel range: 1–24.
 

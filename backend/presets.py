@@ -45,13 +45,18 @@ PRESETS_DIR = Path(
 # además el nombre del archivo, así que un nombre con barras podría escribir fuera de la carpeta.
 NAME_RE = re.compile(r"^[A-Za-z0-9 _\-áéíóúÁÉÍÓÚñÑ()]{1,64}$")
 
+# Reservados para que no choquen con las rutas /api/presets/import y .../export
+RESERVED = {"import", "export"}
+
 
 class PresetError(ValueError):
     """Nombre inválido, perfil inexistente o archivo corrupto."""
 
 
 def valid_name(name: str) -> bool:
-    return bool(isinstance(name, str) and NAME_RE.match(name.strip()))
+    n = (name or "").strip()
+    # "import"/"export" se rechazan: son rutas de la API, un perfil con ese nombre sería confuso.
+    return bool(isinstance(name, str) and NAME_RE.match(n) and n.lower() not in RESERVED)
 
 
 def _path(name: str) -> Path:
@@ -115,3 +120,50 @@ def delete(name: str) -> bool:
         raise PresetError(f"No existe el perfil «{name}».")
     f.unlink()
     return True
+
+
+def export_preset(name: str, dest: str, overwrite: bool = False) -> Path:
+    """Copia el perfil a un archivo en la ubicación que indique el usuario.
+
+    `dest` puede venir con `~`; el directorio destino se crea si falta. Si el archivo ya existe
+    se rechaza salvo `overwrite=True` (exportar nunca debe pisar algo por accidente).
+    """
+    data = load(name)                       # valida que exista y que sea legible
+    dst = Path(dest).expanduser()
+    if dst.suffix.lower() != ".json":
+        raise PresetError("El destino tiene que ser un archivo .json.")
+    if dst.exists() and not overwrite:
+        raise PresetError(f"Ya existe {dst}. Mandá overwrite=true para reemplazarlo.")
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        tmp.replace(dst)
+    except OSError as e:
+        raise PresetError(f"No se pudo escribir en {dst}: {e}") from e
+    return dst
+
+
+def import_preset(src: str, name: str | None = None) -> dict:
+    """Trae un perfil desde un archivo de cualquier ubicación al banco local.
+
+    El nombre sale de `name` si se pasa, si no del `name` dentro del archivo, y si no del nombre
+    del archivo. Valida la estructura antes de guardar (un JSON cualquiera no entra).
+    """
+    p = Path(src).expanduser()
+    if not p.is_file():
+        raise PresetError(f"No existe el archivo {p}.")
+    try:
+        data = json.loads(p.read_text())
+    except Exception as e:
+        raise PresetError(f"{p} no es un JSON válido: {e}") from e
+
+    canales = data.get("channels")
+    if not isinstance(canales, list) or not canales:
+        raise PresetError("El archivo no tiene una lista de canales (¿es un perfil de preamps?).")
+    for c in canales:
+        if not isinstance(c, dict) or "channel" not in c:
+            raise PresetError("El archivo tiene canales mal formados (falta 'channel').")
+
+    destino = name or data.get("name") or p.stem
+    return save(str(destino), canales, device=data.get("device", "Audient EVO 16"))

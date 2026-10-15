@@ -292,6 +292,17 @@ async function poll() {
       if (linkBtn) linkBtn.classList.toggle('on', inp.linked === true);
     }
 
+    // Volumen del MAIN OUT (si el server lo reporta). No pisar mientras se arrastra el slider.
+    if (typeof data.mainVolume === 'number') {
+      const el = document.getElementById('main-volume');
+      const val = document.getElementById('main-volume-val');
+      if (el && document.activeElement !== el) {
+        const v = dbToVol(data.mainVolume);
+        el.value = v;
+        if (val) val.textContent = `${v} / 100  (${data.mainVolume.toFixed(1)} dB)`;
+      }
+    }
+
     // Sync local state
     state = data.inputs.map(i => ({
       ch: i.channel,
@@ -369,6 +380,40 @@ function bindPresets() {
     } catch (err) { presetInfo('Error de red al guardar.', 'bad'); }
   });
 
+  document.getElementById('preset-export').addEventListener('click', async () => {
+    const name = selectedPreset();
+    if (!name) return presetInfo('Elegí un perfil primero.', 'bad');
+    const sugerido = `~/Documents/${name}.json`;
+    const path = (prompt(`¿Dónde guardo «${name}»? (archivo .json)`, sugerido) || '').trim();
+    if (!path) return;
+    try {
+      const r = await fetch(`${API}/presets/${encodeURIComponent(name)}/export`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      const d = await r.json();
+      if (!r.ok) return presetInfo(d.detail || 'No se pudo exportar.', 'bad');
+      presetInfo(`Exportado a ${d.file} (${d.bytes} bytes).`, 'ok');
+    } catch (err) { presetInfo('Error de red al exportar.', 'bad'); }
+  });
+
+  document.getElementById('preset-import').addEventListener('click', async () => {
+    const path = (prompt('Ruta del archivo .json a importar al banco local:', '~/Documents/') || '').trim();
+    if (!path) return;
+    const name = (prompt('¿Con qué nombre entra al banco? (vacío = el que trae el archivo)', '') || '').trim();
+    try {
+      const r = await fetch(`${API}/presets/import`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(name ? { path, name } : { path }),
+      });
+      const d = await r.json();
+      if (!r.ok) return presetInfo(d.detail || 'No se pudo importar.', 'bad');
+      await loadPresets();
+      document.getElementById('preset-select').value = d.name;
+      presetInfo(`Importado «${d.name}» (${d.channels} canales).`, 'ok');
+    } catch (err) { presetInfo('Error de red al importar.', 'bad'); }
+  });
+
   document.getElementById('preset-delete').addEventListener('click', async () => {
     const name = selectedPreset();
     if (!name) return presetInfo('Elegí un perfil primero.', 'bad');
@@ -383,9 +428,55 @@ function bindPresets() {
   });
 }
 
+// ── Volumen del MAIN OUT (unidad 0x36 CS=18) ──
+// Registro descubierto desensamblando la app oficial (UacXUAudientMonitorController::setMainVolume):
+// 2 bytes Q8.8 con signo. La app NO expone este control; acá lo mandamos por USB.
+// Escala de la pantalla del equipo (confirmada por David): 0 = −96 dB y 100 = 0 dB → lineal:
+//     dB = (v − 100) × 0.96        v = dB / 0.96 + 100
+// El valor se manda MIENTRAS se desliza (throttle ~90 ms, siempre el último valor) para que el
+// equipo avance en conjunto con el slider, como si fuera la perilla.
+const VOL_MIN_DB = -96, VOL_MAX_DB = 0;
+const volToDb = (v) => VOL_MIN_DB + (v / 100) * (VOL_MAX_DB - VOL_MIN_DB);
+const dbToVol = (db) => Math.round(((db - VOL_MIN_DB) / (VOL_MAX_DB - VOL_MIN_DB)) * 100);
+
+function bindMainVolume() {
+  const el = document.getElementById('main-volume');
+  const val = document.getElementById('main-volume-val');
+  if (!el) return;
+  let timer = null, pendiente = null;
+
+  function pintar(v) {
+    if (val) val.textContent = `${v} / 100  (${volToDb(v).toFixed(1)} dB)`;
+  }
+  async function enviar(db) {
+    try {
+      const r = await fetch(`${API}/main-volume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ db }),
+      });
+      const d = await r.json();
+      if (r.ok && typeof d.mainVolume === 'number' && val) val.textContent = `${el.value} / 100  (${d.mainVolume.toFixed(1)} dB)`;
+    } catch (err) { /* ignore */ }
+  }
+  function encolar(db) {
+    pendiente = db;
+    if (timer) return;
+    timer = setTimeout(() => { timer = null; const db = pendiente; pendiente = null; enviar(db); }, 90);
+  }
+
+  el.addEventListener('input', () => { pintar(+el.value); encolar(volToDb(+el.value)); });
+  el.addEventListener('change', () => {           // asegura el valor final al soltar
+    if (timer) { clearTimeout(timer); timer = null; }
+    enviar(volToDb(+el.value));
+  });
+  pintar(+el.value);
+}
+
 // ── Init ──
 buildRack();
 poll();
 setInterval(poll, 2000);
 loadPresets();
 bindPresets();
+bindMainVolume();

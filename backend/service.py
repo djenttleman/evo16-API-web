@@ -243,6 +243,11 @@ class Evo16Service:
 
     def get_all_status(self) -> dict:
         status = {"device": "Audient EVO 16", "inputs": [], "outputs": []}
+        # Volumen del main mix (0x36 CS=18): una sola lectura extra por poll.
+        try:
+            status["mainVolume"] = self.get_main_volume()
+        except Exception:
+            status["mainVolume"] = None
         # El link es POR PAR y CS3 lo devuelve igual cualquiera de los dos canales, así que se
         # lee una sola vez por par (en el maestro) y se comparte con el seguidor: el poll suma
         # 12 lecturas en vez de 24. No bajar el intervalo del poll (ver nota del encabezado).
@@ -401,6 +406,48 @@ class Evo16Service:
             if "error" in r:
                 raise RuntimeError(r["error"])
         return a, b
+
+    # ── VOLUMEN DEL MAIN (MonitorController 0x36, CS=18) ──
+    # Proto:  GET/SET CS=18, 2 bytes, entero CON SIGNO little-endian en Q8.8: dB = raw / 256.
+    #         Lo dio el desensamblado de UacXUAudientMonitorController::setMainVolume
+    #         (`mov w2, #0x12` = 18, length 2, `fcvtzs w8, d0, #8` = ×256) y lo confirmó la perilla
+    #         física del equipo: al bajarla el registro pasó de [174,199] = −56.3 dB a
+    #         [0,160] = −96.0 dB.
+    #         Es el volumen del MAIN MIX (las salidas principales). Los volúmenes de CUE usan el
+    #         mismo esquema en CS=19 (cue 1) y siguientes.
+    MAIN_VOL_CS   = 18
+    MAIN_VOL_UNIT = 0x36
+
+    def get_main_volume(self) -> float:
+        """Volumen del main mix en dB (Q8.8 con signo)."""
+        r = self._send({
+            "type": "get_cur",
+            "wValue": (self.MAIN_VOL_CS << 8) | 0,
+            "wIndex": (self.MAIN_VOL_UNIT << 8) | 0,
+            "length": 2,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        d = bytes(r["data"])
+        v = d[0] | (d[1] << 8)
+        if v >= 0x8000:
+            v -= 0x10000
+        return v / 256.0
+
+    def set_main_volume(self, db: float) -> float:
+        """Fija el volumen del main mix. Devuelve el valor cuantizado que se escribió."""
+        raw = int(round(db * 256))
+        raw = max(-0x8000, min(0x7FFF, raw))
+        u = raw & 0xFFFF
+        r = self._send({
+            "type": "set_cur",
+            "wValue": (self.MAIN_VOL_CS << 8) | 0,
+            "wIndex": (self.MAIN_VOL_UNIT << 8) | 0,
+            "data": [u & 0xFF, (u >> 8) & 0xFF],
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return raw / 256.0
 
     # ── PERFILES (capturar / inyectar el estado de los preamps) ──
     # Se apoya en get_all_status() para capturar y en los setters para inyectar. El formato de
