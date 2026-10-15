@@ -401,3 +401,89 @@ class Evo16Service:
             if "error" in r:
                 raise RuntimeError(r["error"])
         return a, b
+
+    # ── PERFILES (capturar / inyectar el estado de los preamps) ──
+    # Se apoya en get_all_status() para capturar y en los setters para inyectar. El formato de
+    # cada canal es el que espera presets.py (ver ese módulo).
+
+    def capture_state(self) -> list[dict]:
+        """Estado guardable de los 24 canales (lo que va dentro de un perfil)."""
+        out = []
+        for entry in self.get_all_status()["inputs"]:
+            out.append({
+                "channel": entry["channel"],
+                "gain": int(entry["gain"]),
+                "phantom": bool(entry["phantom"]),
+                "mute": bool(entry["mute"]),
+                "instrument": bool(entry.get("instrument") or False),
+                "linked": bool(entry.get("linked") or False),
+                "linkPair": entry.get("linkPair"),
+            })
+        return out
+
+    def apply_state(self, channels: list[dict]) -> dict:
+        """Escribe un perfil en el equipo. Devuelve {applied: [...], errors: [...]}.
+
+        Orden pensado para no meter saltos de nivel innecesarios:
+          1. link de cada par (el espejo queda armado antes de escribir los valores finales)
+          2. mute de los canales que van a quedar muteados (así el resto de los cambios no suena)
+          3. phantom / gain / instrument por canal
+          4. unmute de los que terminan sin mute
+
+        Cada operación se intenta por separado: si una falla, el resto sigue y el error queda
+        en el resumen (un canal raro no debe abortar el perfil entero).
+        """
+        by_ch: dict[int, dict] = {}
+        for c in channels:
+            try:
+                ch = int(c.get("channel", 0))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= ch <= self.LINK_MAX_CHANNEL:
+                by_ch[ch] = c
+
+        applied: list[str] = []
+        errors: list[str] = []
+
+        def do(desc: str, fn) -> None:
+            try:
+                fn()
+                applied.append(desc)
+            except Exception as e:
+                errors.append(f"{desc}: {e}")
+
+        # 1. link (una vez por par)
+        pares = set()
+        for ch in sorted(by_ch):
+            a, _b = self.link_pair(ch)
+            if a in pares:
+                continue
+            pares.add(a)
+            # Basta con mirar cualquiera de los dos canales del par.
+            on = bool(by_ch[ch].get("linked"))
+            do(f"link {a}-{a + 1}={int(on)}", lambda a=a, on=on: self.set_link(a, on))
+
+        # 2. mute de los que van a quedar muteados
+        for ch, c in sorted(by_ch.items()):
+            if c.get("mute"):
+                do(f"mute {ch}=1", lambda ch=ch: self.set_mute(ch, True))
+
+        # 3. valores por canal
+        for ch, c in sorted(by_ch.items()):
+            if "phantom" in c:
+                v = bool(c["phantom"])
+                do(f"phantom {ch}={int(v)}", lambda ch=ch, v=v: self.set_phantom(ch, v))
+            if "gain" in c:
+                v = max(0, min(58, int(c["gain"])))
+                do(f"gain {ch}={v}", lambda ch=ch, v=v: self.set_gain(ch, v))
+            # El DI sólo existe en algunos canales; en el resto el setter devuelve False.
+            if ch in self.INSTR_CHANNELS and "instrument" in c:
+                v = bool(c["instrument"])
+                do(f"instrument {ch}={int(v)}", lambda ch=ch, v=v: self.set_instrument(ch, v))
+
+        # 4. unmute de los que terminan sin mute
+        for ch, c in sorted(by_ch.items()):
+            if not c.get("mute"):
+                do(f"mute {ch}=0", lambda ch=ch: self.set_mute(ch, False))
+
+        return {"applied": applied, "errors": errors}

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 <title>EVO 16 Remote</title>
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 <div class="app">
@@ -16,9 +16,19 @@
     </div>
     <span id="status-badge" class="badge live">● LIVE</span>
   </header>
+  <div class="presets">
+    <span class="presets-label">PERFIL DE PREAMPS</span>
+    <select id="preset-select" class="preset-select">
+      <option value="">— sin perfiles —</option>
+    </select>
+    <button id="preset-apply" class="pbtn">APLICAR</button>
+    <button id="preset-save" class="pbtn accent">GUARDAR ESTADO</button>
+    <button id="preset-delete" class="pbtn danger">BORRAR</button>
+    <span id="preset-info" class="preset-info"></span>
+  </div>
   <div id="rack" class="rack"></div>
   <footer id="device-name" class="dim">—</footer>
 </div>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

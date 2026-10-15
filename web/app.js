@@ -309,7 +309,83 @@ async function poll() {
   }
 }
 
+// ── Perfiles de preamps (un archivo JSON por perfil, guardado en el server) ──
+// Guardar = captura el estado ACTUAL del equipo. Aplicar = lo reinyecta (gain, 48V, DI, link de
+// par y mute de los 24 canales). Sirve para mandar estados guardados de preamp por escena.
+let presets = [];
+
+function presetInfo(txt, cls) {
+  const el = document.getElementById('preset-info');
+  el.textContent = txt;
+  el.className = 'preset-info' + (cls ? ' ' + cls : '');
+}
+
+function selectedPreset() {
+  return document.getElementById('preset-select').value;
+}
+
+async function loadPresets() {
+  try {
+    const d = await (await fetch(`${API}/presets`)).json();
+    presets = d.presets || [];
+    const sel = document.getElementById('preset-select');
+    const keep = sel.value;
+    sel.innerHTML = presets.length
+      ? presets.map(p => `<option value="${p.name}">${p.name}${p.error ? ' (ilegible)' : ''}</option>`).join('')
+      : '<option value="">— sin perfiles —</option>';
+    if (keep && presets.some(p => p.name === keep)) sel.value = keep;
+    if (d.dir) sel.title = `Los archivos viven en ${d.dir}`;
+  } catch (err) { /* sin server: el badge ya avisa */ }
+}
+
+function bindPresets() {
+  document.getElementById('preset-apply').addEventListener('click', async () => {
+    const name = selectedPreset();
+    if (!name) return presetInfo('Elegí un perfil primero.', 'bad');
+    presetInfo(`Aplicando «${name}»…`);
+    try {
+      const r = await fetch(`${API}/presets/${encodeURIComponent(name)}/apply`, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) return presetInfo(d.detail || 'No se pudo aplicar.', 'bad');
+      const errs = (d.errors || []).length;
+      presetInfo(errs ? `«${name}» aplicado con ${errs} aviso(s).` : `«${name}» aplicado (${d.applied} operaciones).`,
+                  errs ? 'warn' : 'ok');
+      poll();
+    } catch (err) { presetInfo('Error de red al aplicar.', 'bad'); }
+  });
+
+  document.getElementById('preset-save').addEventListener('click', async () => {
+    const sugerido = selectedPreset() || `Escena ${new Date().toLocaleDateString()}`;
+    const name = (prompt('Nombre del perfil (se guarda el estado ACTUAL del equipo):', sugerido) || '').trim();
+    if (!name) return;
+    presetInfo(`Guardando «${name}»…`);
+    try {
+      const r = await fetch(`${API}/presets/${encodeURIComponent(name)}`, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) return presetInfo(d.detail || 'No se pudo guardar.', 'bad');
+      presetInfo(`Guardado «${d.name}» (${d.channels} canales).`, 'ok');
+      await loadPresets();
+      document.getElementById('preset-select').value = d.name;
+    } catch (err) { presetInfo('Error de red al guardar.', 'bad'); }
+  });
+
+  document.getElementById('preset-delete').addEventListener('click', async () => {
+    const name = selectedPreset();
+    if (!name) return presetInfo('Elegí un perfil primero.', 'bad');
+    if (!confirm(`¿Borrar el perfil «${name}»? Se elimina el archivo del disco.`)) return;
+    try {
+      const r = await fetch(`${API}/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (!r.ok) return presetInfo('No se pudo borrar.', 'bad');
+      document.getElementById('preset-select').value = '';
+      presetInfo(`Borrado «${name}».`, 'ok');
+      await loadPresets();
+    } catch (err) { presetInfo('Error de red al borrar.', 'bad'); }
+  });
+}
+
 // ── Init ──
 buildRack();
 poll();
 setInterval(poll, 2000);
+loadPresets();
+bindPresets();

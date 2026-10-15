@@ -132,6 +132,67 @@ h1 {
   padding-top: 0;
 }
 
+/* ── Barra de perfiles (save state / inyectar por escena) ── */
+.presets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.presets-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  color: var(--dim);
+}
+
+.preset-select {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+}
+
+.pbtn {
+  padding: 7px 14px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-light);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.pbtn:hover { border-color: var(--accent); color: var(--accent-bright); }
+.pbtn:active { transform: scale(0.96); }
+.pbtn.accent { background: var(--accent); border-color: var(--accent); color: #06210f; }
+.pbtn.accent:hover { background: var(--accent-bright); color: #06210f; }
+.pbtn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+.preset-info {
+  flex: 1 1 100%;
+  min-height: 14px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.preset-info.ok { color: var(--accent-bright); }
+.preset-info.warn { color: #f59e0b; }
+.preset-info.bad { color: var(--danger); }
+
 /* ── Rack Grid ── */
 .rack {
   display: grid;

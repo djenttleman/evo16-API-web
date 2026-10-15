@@ -170,6 +170,44 @@ quiere un valor concreto, escribirlo después de linkear. Verificado en hardware
 En `/api/status` cada canal trae `instrument` (sólo donde hay hardware de DI), `linked` y
 `linkPair`. El poll lee CS=3 una vez por par (12 lecturas extra, no 24).
 
+## Perfiles de preamps (save state por escena)
+
+Un perfil guarda el estado de los **24 canales** (gain, 48V, DI, link de par y mute) para poder
+reinyectarlo cuando haga falta — por ejemplo al cambiar de escena.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/api/presets` | Perfiles guardados + la carpeta donde viven los archivos |
+| GET | `/api/presets/{nombre}` | Contenido completo del perfil (JSON) |
+| POST | `/api/presets/{nombre}` | **Guarda el estado ACTUAL del equipo** como ese perfil (sobrescribe) |
+| POST | `/api/presets/{nombre}/apply` | **Inyecta** el perfil en el equipo |
+| DELETE | `/api/presets/{nombre}` | Borra el archivo del perfil |
+
+**Almacenamiento en archivos** (JSON, uno por perfil, editables a mano):
+
+```
+~/Library/Application Support/EVO16Remote/presets/<nombre>.json
+```
+
+Se puede cambiar de carpeta con la variable de entorno `EVO16_PRESETS_DIR` (por ejemplo para
+versionarlos dentro del proyecto):
+
+```bash
+EVO16_PRESETS_DIR="$HOME/dev/evo16-web/presets" \
+  python3 backend/main.py
+```
+
+Los nombres se validan (letras, números, espacios, `-`, `_`, paréntesis; máx. 64) para que un
+nombre no pueda escribir fuera de la carpeta. La escritura es atómica (archivo temporal + rename).
+
+**Orden de aplicación** (importa): primero el link de cada par, después el mute de los que van a
+quedar muteados, luego phantom/gain/DI, y al final el unmute. Escribir el link primero es
+necesario porque al linkear el equipo unifica el valor del par: los valores finales tienen que
+escribirse después para que queden los del perfil.
+
+**UI**: la barra «PERFIL DE PREAMPS» sobre el rack permite elegir, `APLICAR`, `GUARDAR ESTADO`
+(captura el estado actual y lo guarda con el nombre que se escriba) y `BORRAR`.
+
 Channel range: 1–24.
 
 ---

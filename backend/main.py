@@ -16,6 +16,14 @@ from pydantic import BaseModel
 import uvicorn
 
 from backend.service import Evo16Service
+from backend.presets import (
+    PRESETS_DIR,
+    PresetError,
+    delete as delete_preset,
+    list_presets,
+    load as load_preset,
+    save as save_preset,
+)
 
 app = FastAPI(title="EVO 16 Remote", version="1.0.0")
 
@@ -207,6 +215,61 @@ async def set_link(channel: int, req: LinkRequest):
         return {"channel": channel, "linked": req.on, "status": "mock"}
     pair = service.set_link(channel, req.on)
     return {"channel": channel, "linked": req.on, "pair": list(pair), "status": "ok"}
+
+
+# === Perfiles de preamps (un archivo JSON por perfil; ver backend/presets.py) ===
+
+@app.get("/api/presets")
+async def get_presets():
+    """Perfiles guardados + la carpeta donde viven los archivos."""
+    return {"dir": str(PRESETS_DIR), "presets": list_presets()}
+
+@app.get("/api/presets/{name}")
+async def get_preset(name: str):
+    """Contenido completo de un perfil (para inspeccionarlo o editarlo a mano)."""
+    try:
+        return load_preset(name)
+    except PresetError as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/presets/{name}")
+async def save_preset_endpoint(name: str):
+    """Guarda el estado ACTUAL del equipo como perfil «name» (sobrescribe si existe)."""
+    if not service or not service._connected:
+        raise HTTPException(503, "EVO 16 no conectada")
+    try:
+        channels = service.capture_state()
+        data = save_preset(name, channels, device="Audient EVO 16")
+    except PresetError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "name": data["name"], "savedAt": data["savedAt"],
+            "channels": len(channels), "file": str(PRESETS_DIR / (name.strip() + ".json"))}
+
+@app.post("/api/presets/{name}/apply")
+async def apply_preset(name: str):
+    """Inyecta el perfil en el equipo (gain, 48V, DI, link de par y mute de los 24 canales)."""
+    if not service or not service._connected:
+        raise HTTPException(503, "EVO 16 no conectada")
+    try:
+        data = load_preset(name)
+    except PresetError as e:
+        raise HTTPException(400, str(e))
+    result = service.apply_state(data["channels"])
+    return {
+        "status": "ok" if not result["errors"] else "partial",
+        "name": data.get("name", name),
+        "applied": len(result["applied"]),
+        "errors": result["errors"],
+    }
+
+@app.delete("/api/presets/{name}")
+async def delete_preset_endpoint(name: str):
+    """Borra el archivo del perfil."""
+    try:
+        delete_preset(name)
+    except PresetError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "name": name}
 
 
 # === Serve frontend ===
