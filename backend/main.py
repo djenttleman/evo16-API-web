@@ -100,7 +100,11 @@ async def get_status():
     # Mock response for when device is not connected
     inputs = []
     for i in range(1, 25):
-        inputs.append({"channel": i, "gain": 0.0, "mute": False, "phantom": False})
+        a = i if i % 2 == 1 else i - 1
+        inputs.append({
+            "channel": i, "gain": 0.0, "mute": False, "phantom": False,
+            "instrument": False, "linked": False, "linkPair": [a, a + 1],
+        })
     return {
         "device": "Audient EVO 16 (DEMO MODE)",
         "inputs": inputs,

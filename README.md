@@ -157,6 +157,18 @@ Base URL: `http://localhost:3000`
 | POST   | `/api/gain/{ch}`    | `{"db": 35}`      | `{channel, gain, status}`       | Set gain 0–50 dB         |
 | POST   | `/api/mute/{ch}`    | `{"muted": true}` | `{channel, muted, status}`      | Mute toggle              |
 | POST   | `/api/phantom/{ch}` | `{"on": true}`    | `{channel, phantom, status}`    | 48V toggle               |
+| GET    | `/api/instrument/{ch}` | —              | `{channel, instrument, status}` | DI: `true`/`false`/`null` (canales sin hardware de DI) |
+| POST   | `/api/instrument/{ch}` | `{"on": true}` | `{channel, instrument, status}` | Modo instrumento (DI). Sólo canales **1-2, 9-10, 17-18** (el resto: 400) |
+| GET    | `/api/link/{ch}`    | —                 | `{channel, linked, pair, status}` | Link del par al que pertenece el canal |
+| POST   | `/api/link/{ch}`    | `{"on": true}`    | `{channel, linked, pair, status}` | Linkea/deslinkea el par (escribe CS=3 en ambos canales) |
+
+**Link de par estéreo**: los pares son `(1,2)`, `(3,4)`, `(5,6)`, … El estado vive en el equipo
+(EU58 CS=3) y con el par linkeado el **firmware espeja el preamp** (gain y DI comprobados): el
+cliente no debe duplicar escrituras. Al crear el link el equipo unifica el valor del par; si se
+quiere un valor concreto, escribirlo después de linkear. Verificado en hardware (firmware 1.30).
+
+En `/api/status` cada canal trae `instrument` (sólo donde hay hardware de DI), `linked` y
+`linkPair`. El poll lee CS=3 una vez por par (12 lecturas extra, no 24).
 
 Channel range: 1–24.
 

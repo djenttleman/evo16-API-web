@@ -243,6 +243,10 @@ class Evo16Service:
 
     def get_all_status(self) -> dict:
         status = {"device": "Audient EVO 16", "inputs": [], "outputs": []}
+        # El link es POR PAR y CS3 lo devuelve igual cualquiera de los dos canales, así que se
+        # lee una sola vez por par (en el maestro) y se comparte con el seguidor: el poll suma
+        # 12 lecturas en vez de 24. No bajar el intervalo del poll (ver nota del encabezado).
+        link_cache: dict[int, bool] = {}
         for ch in range(VERIFIED_CHANNEL_MIN, VERIFIED_CHANNEL_MAX + 1):
             try:
                 gain = self.get_gain(ch)
@@ -259,12 +263,21 @@ class Evo16Service:
             entry = {
                 "channel": ch, "gain": gain, "mute": mute, "phantom": phantom,
             }
-            # Instrument mode (experimental, CH1-2 only)
-            if ch <= 2:
+            # Modo instrumento / DI: sólo los canales con hardware (ver INSTR_CHANNELS).
+            if ch in self.INSTR_CHANNELS:
                 try:
                     entry["instrument"] = self.get_instrument(ch)
                 except Exception:
                     entry["instrument"] = None
+            # Link del par estéreo (CS=3): estado del par al que pertenece el canal.
+            a, b = self.link_pair(ch)
+            if a not in link_cache:
+                try:
+                    link_cache[a] = self.get_link(a)
+                except Exception:
+                    link_cache[a] = False
+            entry["linked"] = link_cache[a]
+            entry["linkPair"] = [a, b]
             status["inputs"].append(entry)
         for pair in range(5):
             status["outputs"].append({

@@ -1,15 +1,18 @@
-// ── EVO 16 Remote — Knob UI (0–50 dB, mute, phantom) ──
+// ── EVO 16 Remote — Knob UI (0–50 dB, mute, phantom, DI y link de par) ──
 // Audient hardware style — large SVG knobs, electric blue fill
 
 const API = '/api';
 const RANGE = 50;            // 0–50 dB
+// Canales con hardware de instrumento (DI): locales 1-2 + ADAT 9-10 y 17-18.
+// Igual que Evo16Service.INSTR_CHANNELS del backend (el resto responde 400).
+const DI_CHANNELS = [1, 2, 9, 10, 17, 18];
 const DEG_PER_UNIT = 300 / RANGE;   // 300° sweep (7→5 o'clock)
 const START_ANGLE = 210;            // 0 dB = 7 o'clock (210° clockwise from top)
 
 const KNOB_R = 42;           // SVG circle radius
 const KNOB_CIRC = 2 * Math.PI * KNOB_R;   // ~263.9
 
-let state = [];              // {ch, gain, mute, phantom, instrument}
+let state = [];              // {ch, gain, mute, phantom, instrument, linked, linkPair}
 let knobEls = new Map();    // ch → { wrap, fill, dot, valEl }
 
 // ── Global: update visual for a channel ──
@@ -56,7 +59,8 @@ function buildRack() {
       </div>
       <div class="ch-actions">
         <button class="btn-48v" data-ch="${ch}">48V</button>
-        ${ch <= 2 ? '<button class="btn-instr" data-ch="' + ch + '">INSTR</button>' : ''}
+        ${DI_CHANNELS.includes(ch) ? '<button class="btn-instr" data-ch="' + ch + '">INSTR</button>' : ''}
+        <button class="btn-link" data-ch="${ch}">LINK</button>
         <button class="btn-mute" data-ch="${ch}">MUTE</button>
       </div>
     `;
@@ -67,6 +71,7 @@ function buildRack() {
   bindMutes();
   bindPhantoms();
   bindInstruments();
+  bindLinks();
 }
 
 // ── Knob drag ──
@@ -205,6 +210,42 @@ function bindInstruments() {
   });
 }
 
+// ── Link buttons (pares: 1-2, 3-4, 5-6, …) ──
+// El link es un estado POR PAR (EU58 CS=3): al tocarlo se actualizan los botones de los DOS
+// canales del par. Con el par linkeado el firmware espeja el preamp (gain, DI), así que el
+// cliente no tiene que duplicar escrituras.
+function pairOf(ch) {
+  const a = ch % 2 === 1 ? ch : ch - 1;
+  return [a, a + 1];
+}
+
+function bindLinks() {
+  document.querySelectorAll('.btn-link').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ch = +btn.dataset.ch;
+      const entry = state.find(s => s.ch === ch);
+      if (!entry) return;
+      const newLinked = !entry.linked;
+      try {
+        const r = await fetch(`${API}/link/${ch}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ on: newLinked }),
+        });
+        if (r.ok) {
+          const pair = entry.linkPair || pairOf(ch);
+          for (const c of pair) {
+            const e = state.find(s => s.ch === c);
+            if (e) { e.linked = newLinked; e.linkPair = pair; }
+            const b = document.querySelector(`.btn-link[data-ch="${c}"]`);
+            if (b) b.classList.toggle('on', newLinked);
+          }
+        }
+      } catch (err) { /* ignore */ }
+    });
+  });
+}
+
 // ── Poll device status ──
 async function poll() {
   try {
@@ -239,13 +280,16 @@ async function poll() {
         phantomBtn.classList.toggle('on', inp.phantom);
         phantomBtn.textContent = inp.phantom ? '48V' : '48V';
       }
-      // Update instrument button (CH1-2 only)
+      // Update instrument button (sólo canales con hardware de DI)
       const instrBtn = document.querySelector(`.btn-instr[data-ch="${inp.channel}"]`);
       if (instrBtn) {
-        const hasInstr = inp.instrument !== undefined ? inp.instrument : false;
+        const hasInstr = inp.instrument === true;
         instrBtn.classList.toggle('on', hasInstr);
         instrBtn.textContent = hasInstr ? 'INSTR' : 'INSTR';
       }
+      // Update link button (estado del par al que pertenece el canal)
+      const linkBtn = document.querySelector(`.btn-link[data-ch="${inp.channel}"]`);
+      if (linkBtn) linkBtn.classList.toggle('on', inp.linked === true);
     }
 
     // Sync local state
@@ -254,7 +298,9 @@ async function poll() {
       gain: Math.round(i.gain),
       mute: i.mute,
       phantom: i.phantom,
-      instrument: i.instrument !== undefined ? i.instrument : false,
+      instrument: i.instrument === true,
+      linked: i.linked === true,
+      linkPair: i.linkPair || pairOf(i.channel),
     }));
   } catch (err) {
     const badge = document.getElementById('status-badge');

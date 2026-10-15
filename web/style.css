@@ -376,6 +376,40 @@ h1 {
   50%      { box-shadow: 0 0 22px rgba(245,158,11,0.55), inset 0 1px 0 rgba(255,255,255,0.4); }
 }
 
+/* ── Link Button (link de par estéreo) ── */
+.btn-link {
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+}
+
+.btn-link:hover {
+  color: #38bdf8;
+  border-color: rgba(56,189,248,0.4);
+  background: rgba(56,189,248,0.06);
+}
+
+.btn-link:active {
+  transform: scale(0.96);
+}
+
+/* Link on state — sky blue (el par queda como canal estéreo) */
+.btn-link.on {
+  background: #38bdf8;
+  color: #080a0f;
+  border-color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56,189,248,0.35);
+}
+
 /* ── Mute Button ── */
 .btn-mute {
   border: none;
