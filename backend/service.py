@@ -449,6 +449,30 @@ class Evo16Service:
             raise RuntimeError(r["error"])
         return raw / 256.0
 
+    # ── STORE STANDALONE STATE (unidad 0x36 CS=24) ──
+    # El equipo puede funcionar SIN computadora usando su propia memoria interna: guarda un estado
+    # completo (ganancias, DI, 48V, y también el volumen del main). El comando lo dio el
+    # desensamblado de UacXUAudientMonitorController::setStandAloneState: SET_CUR a
+    # MonitorController (0x36) con CS=24, índice 0 y 4 bytes en cero — es un TRIGGER sin dato
+    # (`stur wzr, [x29, #-0x4]`), no un registro que se lea o escriba con un valor.
+    # Es de UNA SOLA VÍA: pisa el estado guardado antes y no se puede leer ni restaurar desde acá.
+    # Para verificar hace falta ciclar la energía del equipo: al volver debe cargar ESTO.
+    STANDALONE_CS   = 24
+    STANDALONE_UNIT = 0x36
+
+    def store_standalone(self) -> dict:
+        """Guarda el estado ACTUAL en la memoria de la interfaz (trigger CS=24)."""
+        r = self._send({
+            "type": "set_cur",
+            "wValue": (self.STANDALONE_CS << 8) | 0,
+            "wIndex": (self.STANDALONE_UNIT << 8) | 0,
+            "data": [0, 0, 0, 0],
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return {"stored": True, "verify": "ciclar la energía del equipo y comprobar que vuelve con "
+                                          "el estado actual"}
+
     # ── ESTADO / RECONEXIÓN (para monitoreo y para agentes que consumen esta API) ──
 
     def health(self) -> dict:

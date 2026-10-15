@@ -237,6 +237,17 @@ slider como si fuera la perilla.
 
 En `/api/status` el campo `mainVolume` trae el valor actual (una lectura extra por poll).
 
+## Memoria interna del equipo (standalone)
+
+`POST /api/store-standalone` guarda el estado **actual** en la memoria interna de la interfaz, para
+que el equipo funcione **solo, sin computadora** (incluye ganancias, DI, 48V y el volumen del main).
+
+Trigger descubierto en el binario (`UacXUAudientMonitorController::setStandAloneState`): `SET_CUR` a
+`MonitorController` (unidad `0x36`), **`CS=24`**, índice 0, **4 bytes en cero** — no lleva valor, es
+un comando. Es de **una sola vía**: pisa el estado guardado antes y no se puede leer ni restaurar
+desde la API; se verifica **ciclando la energía** del equipo (al volver debe cargar ese estado).
+En la UI es el botón «GUARDAR EN LA INTERFAZ».
+
 Channel range: 1–24.
 
 ---

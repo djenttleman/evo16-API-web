@@ -342,6 +342,21 @@ async def reconnect():
         raise HTTPException(503, "servicio sin inicializar")
     return {"service": "ok", "device": service.reconnect()}
 
+@app.post("/api/store-standalone")
+async def store_standalone():
+    """Guarda el estado actual en la MEMORIA INTERNA de la interfaz ("Store Standalone State").
+
+    Sirve para que el equipo trabaje solo, sin computadora. Es de una sola vía: pisa lo que haya
+    guardado. Para verificarlo hay que ciclar la energía del equipo y comprobar que vuelve con
+    este estado.
+    """
+    if not service or not service._connected:
+        raise HTTPException(503, "EVO 16 no conectada")
+    try:
+        return {"service": "ok", **service.store_standalone()}
+    except Exception as e:                         # noqa: BLE001
+        raise HTTPException(500, str(e))
+
 @app.get("/api/info")
 async def info():
     """Qué sabe hacer esta API — pensado para que lo lea un agente antes de usarla.
@@ -367,6 +382,8 @@ async def info():
                         "GET|POST /api/instrument/{ch} {on}   (DI; canales 1,2,9,10,17,18)"],
             "link": ["GET|POST /api/link/{ch} {on}   (pares (impar, impar+1); el firmware espeja gain y DI)"],
             "volumenMain": ["GET|POST /api/main-volume {db}   (dB; escala de pantalla 0-100 = -96..0 dB)"],
+            "standalone": ["POST /api/store-standalone   (guarda el estado en la memoria INTERNA de "
+                           "la interfaz; una sola vía; verificar ciclando la energía)"],
             "perfiles": ["GET /api/presets", "GET /api/presets/{nombre}",
                          "POST /api/presets/{nombre} (guarda el estado ACTUAL)",
                          "POST /api/presets/{nombre}/apply", "POST /api/presets/{nombre}/export",

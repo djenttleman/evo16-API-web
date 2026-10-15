@@ -473,6 +473,34 @@ function bindMainVolume() {
   pintar(+el.value);
 }
 
+// ── Guardar el estado en la memoria INTERNA de la interfaz ("Store Standalone State") ──
+// Para que el equipo trabaje solo, sin computadora. Trigger 0x36 CS=24 (ver service.py).
+// Es de UNA SOLA VÍA: pisa lo que haya guardado; se verifica ciclando la energía del equipo.
+function bindStandalone() {
+  const btn = document.getElementById('store-standalone');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const ok = confirm('¿Guardar el estado ACTUAL en la memoria de la interfaz?\n\n' +
+      'PISA lo que haya guardado y no se puede deshacer desde acá.\n\n' +
+      'Es el estado que el equipo usará cuando trabaje solo, sin computadora.');
+    if (!ok) return;
+    const info = document.getElementById('preset-info');
+    btn.disabled = true;
+    try {
+      const r = await fetch(`${API}/store-standalone`, { method: 'POST' });
+      const d = await r.json();
+      if (info) {
+        info.textContent = r.ok
+          ? 'Guardado en la interfaz ✓ — verificalo ciclando la energía del equipo'
+          : (d.detail || 'No se pudo guardar.');
+        info.className = 'preset-info ' + (r.ok ? 'ok' : 'bad');
+      }
+    } catch (err) {
+      if (info) { info.textContent = 'Error de red al guardar en la interfaz.'; info.className = 'preset-info bad'; }
+    } finally { btn.disabled = false; }
+  });
+}
+
 // ── Init ──
 buildRack();
 poll();
@@ -480,3 +508,4 @@ setInterval(poll, 2000);
 loadPresets();
 bindPresets();
 bindMainVolume();
+bindStandalone();

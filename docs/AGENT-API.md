@@ -82,6 +82,21 @@ CS=3); al deslinkear el equipo **no** restaura los valores previos de cada canal
 |---|---|---|---|
 | GET/POST | `/api/main-volume` | `{"db": -20}` | Control que **la app oficial no expone**. Escala de la pantalla del equipo: **0 = −96 dB, 100 = 0 dB** ⇒ `dB = (v − 100) × 0.96` |
 
+## Memoria interna del equipo (standalone)
+
+| Método | Ruta | Notas |
+|---|---|---|
+| POST | `/api/store-standalone` | Guarda el estado **actual** en la memoria interna de la interfaz para que el equipo trabaje **solo, sin computadora**. Trigger en `MonitorController` (0x36) `CS=24`, 4 bytes en 0 |
+
+**Es de UNA SOLA VÍA**: pisa el estado guardado antes y no se puede leer ni restaurar desde la API.
+Para verificarlo hay que **ciclar la energía del equipo**: al volver debe cargar ese estado (incluye
+ganancias, DI, 48V y el volumen del main).
+
+```bash
+# guardar cómo está ahora para uso standalone, y comprobar tras ciclar la energía
+curl -X POST http://127.0.0.1:3000/api/store-standalone
+```
+
 ## Perfiles de preamps (banco local en archivos)
 
 | Método | Ruta | Cuerpo | Notas |
