@@ -336,3 +336,55 @@ class Evo16Service:
         if "error" in r:
             raise RuntimeError(r["error"])
         return True
+
+    # ── LINK / par estéreo (EU58 CS=3) — VERIFICADO EN HARDWARE 2026-10-15 ──
+    # Proto:  EU58 CS=3, 4 bytes. Vale 1 en LOS DOS canales del par y 0 en el resto: es el
+    #         bit de "canal estéreo". Con CS3=1 el FIRMWARE ESPEJA el preamp entre el par
+    #         (comprobado con gain y con el DI; phantom no se midió): escribir en el maestro
+    #         mueve también al seguidor y viceversa, así que NO hay que duplicar escrituras
+    #         desde el cliente. Basta con escribirlo en el canal par (maestro).
+    #         Apagar = escribir 0 en los dos canales del par.
+    # Pares: (1,2), (3,4), (5,6), … — 1-based, (impar, impar+1) = (maestro, seguidor).
+    # Descartado: CS5/CS6 NO son el link (son inertes, ver la skill audient-usb-control).
+    LINK_CS     = 3
+    LINK_ENTITY = VERIFIED_EU58  # 0x3A00
+    LINK_SIZE   = 4
+    LINK_MAX_CHANNEL = VERIFIED_CHANNEL_MAX
+
+    @staticmethod
+    def link_pair(channel: int) -> tuple[int, int]:
+        """Par estéreo (1-based) al que pertenece el canal: (maestro impar, seguidor par)."""
+        a = channel if channel % 2 == 1 else channel - 1
+        return a, a + 1
+
+    def get_link(self, channel: int) -> bool:
+        """True si el par al que pertenece el canal está linkeado (lee CS3 del maestro)."""
+        a, _ = self.link_pair(channel)
+        r = self._send({
+            "type": "get_cur",
+            "wValue": (self.LINK_CS << 8) | (a - 1),
+            "wIndex": self.LINK_ENTITY,
+            "length": self.LINK_SIZE,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return bool(bytes(r["data"])[0])
+
+    def set_link(self, channel: int, on: bool) -> tuple[int, int]:
+        """Linkea/deslinkea el par del canal. Devuelve el par (maestro, seguidor) afectado.
+
+        Se escribe CS3 en AMBOS canales del par (es el estado que deja la app oficial),
+        aunque para crear el espejo baste con el maestro.
+        """
+        a, b = self.link_pair(channel)
+        val = [1 if on else 0, 0, 0, 0]
+        for ch in (a, b):
+            r = self._send({
+                "type": "set_cur",
+                "wValue": (self.LINK_CS << 8) | (ch - 1),
+                "wIndex": self.LINK_ENTITY,
+                "data": val,
+            })
+            if "error" in r:
+                raise RuntimeError(r["error"])
+        return a, b

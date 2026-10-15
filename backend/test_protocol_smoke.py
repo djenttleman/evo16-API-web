@@ -83,6 +83,19 @@ def main():
     check("Instr CH1 wValue", (service.Evo16Service.INSTR_CS << 8) | 0,  1024)
     check("Instr CH9 wValue", (service.Evo16Service.INSTR_CS << 8) | 8,  1032)
 
+    # ── Link / par estéreo (re-verificado en hardware 2026-10-15) ──
+    # CS=3 vale 1 en los dos canales del par; con él el firmware espeja el preamp.
+    print("\n── Link / Stereo Pair Protocol ──")
+    check("Link CS",           service.Evo16Service.LINK_CS,              3)
+    check("Link payload size", service.Evo16Service.LINK_SIZE,            4)
+    check("Link entity",       service.Evo16Service.LINK_ENTITY,    0x3A00)
+    check("Link pair CH1",     service.Evo16Service.link_pair(1),     (1, 2))
+    check("Link pair CH2",     service.Evo16Service.link_pair(2),     (1, 2))
+    check("Link pair CH9",     service.Evo16Service.link_pair(9),     (9, 10))
+    check("Link pair CH24",    service.Evo16Service.link_pair(24),   (23, 24))
+    # wValue: CS=3 → link CH1 = (3<<8)|0 = 768
+    check("Link CH1 wValue",  (service.Evo16Service.LINK_CS << 8) | 0,     768)
+
     # ── Channel ranges ──
     print("\n── Channel Ranges ──")
     check("Channel min",        service.VERIFIED_CHANNEL_MIN,        1)

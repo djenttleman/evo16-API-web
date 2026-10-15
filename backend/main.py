@@ -178,6 +178,33 @@ async def set_instrument(channel: int, req: InstrRequest):
     return {"channel": channel, "instrument": req.on, "status": "ok"}
 
 
+class LinkRequest(BaseModel):
+    on: bool
+
+# Link de par estéreo (ver service.py → LINK_CS; es CS=3 del EVO 16). El par de un canal es
+# (impar, impar+1): 1-2, 3-4, 5-6, … Con el par linkeado el FIRMWARE espeja el preamp (gain, DI),
+# así que el cliente NO necesita duplicar escrituras: le basta linkear y escribir en un lado.
+@app.get("/api/link/{channel}")
+async def get_link(channel: int):
+    """Estado de link del par al que pertenece el canal (1..24)."""
+    if not (1 <= channel <= 24):
+        raise HTTPException(400, "Channel out of range (1-24)")
+    pair = service.link_pair(channel) if service else (channel, channel)
+    if not service or not service._connected:
+        return {"channel": channel, "linked": False, "pair": list(pair), "status": "mock"}
+    return {"channel": channel, "linked": service.get_link(channel), "pair": list(pair), "status": "ok"}
+
+@app.post("/api/link/{channel}")
+async def set_link(channel: int, req: LinkRequest):
+    """Linkea/deslinkea el par del canal (escribe CS3 en ambos canales del par)."""
+    if not (1 <= channel <= 24):
+        raise HTTPException(400, "Channel out of range (1-24)")
+    if not service or not service._connected:
+        return {"channel": channel, "linked": req.on, "status": "mock"}
+    pair = service.set_link(channel, req.on)
+    return {"channel": channel, "linked": req.on, "pair": list(pair), "status": "ok"}
+
+
 # === Serve frontend ===
 
 def _get_web_dir() -> Path:
