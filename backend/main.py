@@ -2,6 +2,7 @@
 
 import sys
 import os
+import time
 import tempfile
 import webbrowser
 import subprocess
@@ -285,6 +286,94 @@ class LinkRequest(BaseModel):
 
 class VolumeRequest(BaseModel):
     db: float
+
+# ── Salud / info / reconexión: pensados para que los consuma un agente (ver docs/AGENT-API.md) ──
+APP_VERSION = "1.1.0"
+STARTED_AT = time.time()
+
+def _app_running() -> bool:
+    """¿Está abierta la app oficial? Es la dueña del USB, así que si lo está el control falla."""
+    try:
+        r = subprocess.run(["pgrep", "-f", "EVO.app/Contents/MacOS/EVO"],
+                           capture_output=True, text=True, timeout=5)
+        return bool(r.stdout.strip())
+    except Exception:
+        return False
+
+def _urls() -> dict:
+    """URLs donde escucha este server (la UI y la API viven en el mismo puerto)."""
+    import socket
+    hosts = {"loopback": f"http://127.0.0.1:{SERVER_PORT}"}
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))            # no manda nada: sólo resuelve la IP de salida
+        hosts["lan"] = f"http://{s.getsockname()[0]}:{SERVER_PORT}"
+        s.close()
+    except Exception:
+        pass
+    return hosts
+
+@app.get("/api/health")
+async def health():
+    """Estado EN VIVO del servicio y del equipo, en un solo llamado.
+
+    Devuelve: si el helper responde, si el EQUIPO contesta de verdad (hace una lectura real),
+    si la app oficial está abierta (bloquea el control), las URLs y la antigüedad del proceso.
+    """
+    dev: dict = {"connected": False, "error": "servicio sin inicializar"}
+    if service is not None:
+        try:
+            dev = service.health()
+        except Exception as e:                     # noqa: BLE001
+            dev = {"connected": False, "error": str(e)}
+    return {
+        "service": "ok",
+        "version": APP_VERSION,
+        "uptimeSeconds": round(time.time() - STARTED_AT, 1),
+        "urls": _urls(),
+        "audientAppRunning": _app_running(),
+        "device": dev,
+    }
+
+@app.post("/api/reconnect")
+async def reconnect():
+    """Reabre el dispositivo. Llamar después de cerrar la app oficial (ella tiene el USB)."""
+    if service is None:
+        raise HTTPException(503, "servicio sin inicializar")
+    return {"service": "ok", "device": service.reconnect()}
+
+@app.get("/api/info")
+async def info():
+    """Qué sabe hacer esta API — pensado para que lo lea un agente antes de usarla.
+
+    Cada capacidad lista el método y la ruta. El detalle (protocolo, escalas, pares de link,
+    orden de aplicación de perfiles) está en docs/AGENT-API.md y en /docs (OpenAPI).
+    """
+    return {
+        "name": "EVO 16 Remote",
+        "version": APP_VERSION,
+        "device": "Audient EVO 16 (USB Audio Class 2, firmware 1.30)",
+        "urls": _urls(),
+        "openapi": "/docs",
+        "guide": "docs/AGENT-API.md",
+        "requirement": "la app oficial EVO Control debe estar CERRADA (es la dueña del USB)",
+        "capabilities": {
+            "estado": ["GET /api/status (los 24 canales + mainVolume)",
+                       "GET /api/health (conexión en vivo)",
+                       "POST /api/reconnect"],
+            "preamps": ["GET|POST /api/gain/{ch} {db}",
+                        "GET|POST /api/phantom/{ch} {on}",
+                        "GET|POST /api/mute/{ch} {muted}",
+                        "GET|POST /api/instrument/{ch} {on}   (DI; canales 1,2,9,10,17,18)"],
+            "link": ["GET|POST /api/link/{ch} {on}   (pares (impar, impar+1); el firmware espeja gain y DI)"],
+            "volumenMain": ["GET|POST /api/main-volume {db}   (dB; escala de pantalla 0-100 = -96..0 dB)"],
+            "perfiles": ["GET /api/presets", "GET /api/presets/{nombre}",
+                         "POST /api/presets/{nombre} (guarda el estado ACTUAL)",
+                         "POST /api/presets/{nombre}/apply", "POST /api/presets/{nombre}/export",
+                         "POST /api/presets/import", "DELETE /api/presets/{nombre}"],
+        },
+        "channelRange": "1-24",
+    }
 
 # Volumen del MAIN MIX (ver service.py → MAIN_VOL_CS). Lo descubrió el desensamblado de
 # UacXUAudientMonitorController::setMainVolume y lo confirmó la perilla física del equipo.

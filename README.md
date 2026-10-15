@@ -1,5 +1,11 @@
 # EVO 16 Remote — macOS Web Controller
 
+Control remoto de una **Audient EVO 16** por USB: preamps (ganancia, 48V, DI, mute), link de par,
+**volumen del main out**, perfiles de preamps guardables/exportables, y una **API HTTP pensada para
+que la consuma un agente** → [`docs/AGENT-API.md`](docs/AGENT-API.md).
+
+Servicio on-demand: `evo16-remote start|stop|status|url|health` (ver `bin/evo16-remote`).
+
 > **English** | [Español](#español)
 
 ---

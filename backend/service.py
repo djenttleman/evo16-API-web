@@ -449,6 +449,49 @@ class Evo16Service:
             raise RuntimeError(r["error"])
         return raw / 256.0
 
+    # ── ESTADO / RECONEXIÓN (para monitoreo y para agentes que consumen esta API) ──
+
+    def health(self) -> dict:
+        """Estado de conexión EN VIVO.
+
+        No confía en `self._connected`: hace una lectura real al equipo (el volumen del main, que
+        es una lectura barata y siempre disponible) para distinguir "el helper responde" de "el
+        helper está vivo pero el equipo no contesta" (p. ej. la app oficial tiene el USB, o el
+        endpoint quedó raro). Devuelve además el motivo cuando falla.
+        """
+        info: dict = {
+            "connected": False,
+            "helper": self._proc is not None and self._proc.poll() is None,
+            "entity": f"0x{self.MAIN_VOL_UNIT:02X}",
+        }
+        try:
+            info["mainVolume"] = self.get_main_volume()
+            info["connected"] = True
+        except Exception as e:                     # noqa: BLE001
+            info["error"] = str(e)
+            info["hint"] = ("Si la app oficial EVO Control está abierta, es la dueña del USB: "
+                            "cerrala y llamá a /api/reconnect.")
+        return info
+
+    def reconnect(self) -> dict:
+        """Cierra el helper y lo vuelve a levantar, y devuelve el estado ya verificado.
+
+        Es lo que hay que llamar después de cerrar la app oficial: el server conecta una sola vez
+        al arrancar, así que si el equipo estaba ocupado se queda sin dispositivo hasta esto.
+        """
+        import time as _t
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+        _t.sleep(0.6)
+        self._connected = False
+        try:
+            self.connect()
+        except Exception as e:                     # noqa: BLE001
+            return {"connected": False, "error": f"no se pudo abrir el dispositivo: {e}"}
+        return self.health()
+
     # ── PERFILES (capturar / inyectar el estado de los preamps) ──
     # Se apoya en get_all_status() para capturar y en los setters para inyectar. El formato de
     # cada canal es el que espera presets.py (ver ese módulo).
