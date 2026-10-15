@@ -279,11 +279,23 @@ h1 {
 }
 
 /* ── Action buttons row ── */
+/* Dos filas: los botones de preamp (48V / INSTR) arriba y LINK / MUTE abajo. En una sola fila,
+   los canales que tienen INSTR (1-2, 9-10, 17-18) se salían del contenedor de 180px. */
 .ch-actions {
-  display: flex;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
   width: 100%;
-  justify-content: center;
+}
+
+.ch-actions > button {
+  width: 100%;
+  padding: 7px 0;
+}
+
+/* Canales sin INSTR (3 botones): el último ocupa las dos columnas, así no queda torcido. */
+.ch-actions > button:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 
 /* ── 48V Phantom Button ── */
@@ -515,10 +527,9 @@ footer {
   .knob-value::after { font-size: 7px; margin-top: -3px; }
   .knob-bg, .knob-fill { stroke-width: 7; }
   .ch-label { font-size: 9px; letter-spacing: 1px; }
-  .btn-mute {
-    padding: 6px 18px;
-    font-size: 9px;
-  }
+  /* Los botones van en grilla de 2 columnas: se achican todos parejo. */
+  .ch-actions { gap: 5px; }
+  .ch-actions > button { padding: 6px 0; font-size: 9px; }
   h1 { font-size: 20px; }
   .header-sub { display: none; }
   header {
