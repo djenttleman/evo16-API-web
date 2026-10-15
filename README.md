@@ -5,6 +5,7 @@ Control remoto de una **Audient EVO 16** por USB: preamps (ganancia, 48V, DI, mu
 que la consuma un agente** → [`docs/AGENT-API.md`](docs/AGENT-API.md).
 
 Servicio on-demand: `evo16-remote start|stop|status|url|health` (ver `bin/evo16-remote`).
+Pendientes y lo ya investigado para retomarlos: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 > **English** | [Español](#español)
 
@@ -247,6 +248,28 @@ Trigger descubierto en el binario (`UacXUAudientMonitorController::setStandAlone
 un comando. Es de **una sola vía**: pisa el estado guardado antes y no se puede leer ni restaurar
 desde la API; se verifica **ciclando la energía** del equipo (al volver debe cargar ese estado).
 En la UI es el botón «GUARDAR EN LA INTERFAZ».
+
+## Medidores en tiempo real
+
+`GET /api/meters` devuelve los niveles **en dB** de los 24 canales de entrada y de las salidas
+(16), más el estado de clip de cada uno. Una llamada son 4 transferencias USB (~3 ms medidos), así
+que sirve para medidores en vivo.
+
+Protocolo (del desensamblado de `MixerModel::updateInputMeterValues` / `updateOutputMeterValues`):
+`GET_MEM` con `bmRequestType=0xA1`, `bRequest=0x03`, `wIndex = 0x3C00` (unidad `0x3C`) y
+`wLength = 2 × canales`; el **`wValue` elige el bloque**: `0` = niveles de entrada, `1` = niveles de
+salida, `2` = clip de entradas (1 byte/canal), `3` = clip de salidas. Cada nivel son **2 bytes
+little-endian = amplitud lineal** con 65536 = full scale ⇒ **`dB = 20·log10(raw / 65536)`** (lo que
+hace `DecibelConversions::meterIntToDB`). Verificado en hardware: un canal sin señal lee 1
+(−96.3 dB) y 0 significa silencio.
+
+## Fuente de reloj
+
+`GET /api/clock` · `POST /api/clock {"source": "internal" | "optical1" | "optical2"}` (o 1/2/3).
+
+`ClockSelector` (unidad `0x28`), **`CS=1`**, 1 byte: `1` = Internal, `2` = Óptica 1, `3` = Óptica 2
+(la clase de la app es `UacLib::UacClockSelector`). Ojo: cambiar el reloj a óptica sin nada
+conectado deja al equipo sin sincronía.
 
 Channel range: 1–24.
 

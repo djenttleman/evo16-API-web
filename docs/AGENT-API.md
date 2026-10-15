@@ -82,6 +82,37 @@ CS=3); al deslinkear el equipo **no** restaura los valores previos de cada canal
 |---|---|---|---|
 | GET/POST | `/api/main-volume` | `{"db": -20}` | Control que **la app oficial no expone**. Escala de la pantalla del equipo: **0 = −96 dB, 100 = 0 dB** ⇒ `dB = (v − 100) × 0.96` |
 
+## Medidores (niveles en tiempo real)
+
+| Método | Ruta | Devuelve |
+|---|---|---|
+| GET | `/api/meters` | `inputs` (24) y `outputs` (16) **en dB**, más `inputClips`/`outputClips` |
+
+Una llamada son **4 transferencias USB** (~3 ms medidos), así que se puede consultar varias veces
+por segundo: es apta para medidores en vivo. `-120.0` = silencio.
+
+Protocolo (del desensamblado de `MixerModel::updateInputMeterValues` / `updateOutputMeterValues`):
+`GET_MEM` → `bmRequestType=0xA1`, `bRequest=0x03`, `wIndex = 0x3C00` (unidad `0x3C`),
+`wLength = 2 × canales`; el **`wValue` es el selector**: `0` = niveles de entrada, `1` = niveles de
+salida, `2` = clip de entradas (1 byte/canal), `3` = clip de salidas. Cada nivel son **2 bytes
+little-endian = amplitud lineal**, con 65536 = full scale ⇒ `dB = 20·log10(raw / 65536)` (es lo que
+hace `DecibelConversions::meterIntToDB`).
+
+```bash
+curl -s http://127.0.0.1:3000/api/meters | jq '{ch1: .inputs[0], mainL: .outputs[0]}'
+```
+
+## Fuente de reloj
+
+| Método | Ruta | Cuerpo | Notas |
+|---|---|---|---|
+| GET | `/api/clock` | — | `{"value": 1, "name": "internal"}` |
+| POST | `/api/clock` | `{"source": "internal"}` o `{"source": 2}` | Acepta nombre o número |
+
+Valores: **1 = internal, 2 = optical1, 3 = optical2** (`ClockSelector` 0x28, `CS=1`, 1 byte).
+Cambiar el reloj afecta la sincronización del equipo: si no hay nada conectado en la entrada óptica,
+poner `optical1` deja al equipo sin reloj.
+
 ## Memoria interna del equipo (standalone)
 
 | Método | Ruta | Notas |

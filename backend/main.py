@@ -357,6 +357,49 @@ async def store_standalone():
     except Exception as e:                         # noqa: BLE001
         raise HTTPException(500, str(e))
 
+@app.get("/api/clock")
+async def get_clock():
+    """Fuente de reloj actual del equipo (internal / optical1 / optical2)."""
+    if not service or not service._connected:
+        return {"status": "mock"}
+    return {"status": "ok", **service.get_clock_source()}
+
+class ClockRequest(BaseModel):
+    source: int | str            # 1|2|3 o "internal"|"optical1"|"optical2"
+
+@app.post("/api/clock")
+async def set_clock(req: ClockRequest):
+    """Cambia la fuente de reloj (ClockSelector 0x28 CS=1)."""
+    if not service or not service._connected:
+        raise HTTPException(503, "EVO 16 no conectada")
+    val = req.source
+    if isinstance(val, str):
+        inv = {v: k for k, v in service.CLOCK_NAMES.items()}
+        if val.strip().lower() not in inv:
+            raise HTTPException(400, "Fuente inválida: internal, optical1 u optical2.")
+        val = inv[val.strip().lower()]
+    try:
+        return {"status": "ok", **service.set_clock_source(int(val))}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:                             # noqa: BLE001
+        raise HTTPException(500, str(e))
+
+@app.get("/api/meters")
+async def meters():
+    """Niveles en dB de los 24 canales de entrada y de las salidas (más el clip).
+
+    Pensado para **medidores en tiempo real**: una llamada son 4 transferencias USB (bloques
+    GET_MEM de la unidad 0x3C), así que se puede consultar varias veces por segundo sin castigar
+    al equipo. `-120.0` significa silencio.
+    """
+    if not service or not service._connected:
+        return {"status": "mock", "inputs": [], "outputs": []}
+    try:
+        return {"status": "ok", **service.get_meters()}
+    except Exception as e:                             # noqa: BLE001
+        raise HTTPException(500, str(e))
+
 @app.get("/api/info")
 async def info():
     """Qué sabe hacer esta API — pensado para que lo lea un agente antes de usarla.
@@ -384,6 +427,9 @@ async def info():
             "volumenMain": ["GET|POST /api/main-volume {db}   (dB; escala de pantalla 0-100 = -96..0 dB)"],
             "standalone": ["POST /api/store-standalone   (guarda el estado en la memoria INTERNA de "
                            "la interfaz; una sola vía; verificar ciclando la energía)"],
+            "medidores": ["GET /api/meters   (niveles en dB de los 24 canales y de las salidas + "
+                          "clip; 4 transferencias por llamada: sirve para tiempo real)"],
+            "clock": ["GET|POST /api/clock {source}   (1/internal, 2/optical1, 3/optical2)"],
             "perfiles": ["GET /api/presets", "GET /api/presets/{nombre}",
                          "POST /api/presets/{nombre} (guarda el estado ACTUAL)",
                          "POST /api/presets/{nombre}/apply", "POST /api/presets/{nombre}/export",

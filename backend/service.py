@@ -449,6 +449,95 @@ class Evo16Service:
             raise RuntimeError(r["error"])
         return raw / 256.0
 
+    # ── MEDIDORES (niveles por canal) ──
+    # Del desensamblado de MixerModel::updateInputMeterValues / updateOutputMeterValues:
+    #   request: bmRequestType=0xA1, bRequest=0x03, wIndex = unidad 0x3C << 8, wLength = 2 × canales
+    #   wValue = selector:  0 = niveles de ENTRADA, 1 = niveles de SALIDA,
+    #                       2 = clip de entradas, 3 = clip de salidas (1 byte por canal)
+    #   Cada nivel son 2 bytes little-endian = AMPLITUD LINEAL, con 65536 = full scale:
+    #       dB = 20·log10(raw / 65536)     ← es lo que hace DecibelConversions::meterIntToDB
+    #   Verificado en hardware: canales sin señal leen 1 → −96.3 dB, 0 → silencio.
+    METER_UNIT          = 0x3C
+    METER_SEL_IN        = 0
+    METER_SEL_OUT       = 1
+    METER_SEL_IN_CLIP   = 2
+    METER_SEL_OUT_CLIP  = 3
+    NUM_INPUTS          = 24
+    NUM_OUTPUTS         = 16
+
+    def _meter_block(self, selector: int, n_bytes: int) -> list[int]:
+        r = self._send({
+            "type": "ctrl",
+            "bmReqType": 0xA1,
+            "bReq": 0x03,
+            "wValue": selector,
+            "wIndex": self.METER_UNIT << 8,
+            "length": n_bytes,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return list(r["data"])
+
+    def get_meters(self) -> dict:
+        """Niveles en dB de los 24 canales de entrada y de las salidas, más el estado de clip.
+
+        Una sola lectura por bloque (4 transferencias), así que se puede consultar seguido para
+        tener medidores en tiempo real.
+        """
+        import math
+
+        def a_db(lo: int, hi: int) -> float:
+            raw = lo | (hi << 8)
+            if raw <= 0:
+                return -120.0                     # silencio (el firmware usa 20·log10(0) = -inf)
+            return round(20 * math.log10(raw / 65536.0), 1)
+
+        e_in = self._meter_block(self.METER_SEL_IN, self.NUM_INPUTS * 2)
+        e_out = self._meter_block(self.METER_SEL_OUT, self.NUM_OUTPUTS * 2)
+        c_in = self._meter_block(self.METER_SEL_IN_CLIP, self.NUM_INPUTS)
+        c_out = self._meter_block(self.METER_SEL_OUT_CLIP, self.NUM_OUTPUTS)
+        return {
+            "inputs": [a_db(e_in[2 * i], e_in[2 * i + 1]) for i in range(self.NUM_INPUTS)],
+            "outputs": [a_db(e_out[2 * i], e_out[2 * i + 1]) for i in range(self.NUM_OUTPUTS)],
+            "inputClips": c_in[: self.NUM_INPUTS],
+            "outputClips": c_out[: self.NUM_OUTPUTS],
+            "note": "dB = 20*log10(raw/65536); -120.0 = silencio. Una llamada = 4 transferencias.",
+        }
+
+    # ── CLOCK SOURCE (ClockSelector 0x28, CS=1) ──
+    # 1 byte: 1 = Internal, 2 = Óptica 1, 3 = Óptica 2 (leído del equipo; CS=0 no existe).
+    # La clase de la app es UacLib::UacClockSelector (setClockSource/clockSourceChanged).
+    CLOCK_UNIT  = 0x28
+    CLOCK_CS    = 1
+    CLOCK_NAMES = {1: "internal", 2: "optical1", 3: "optical2"}
+
+    def get_clock_source(self) -> dict:
+        """Fuente de reloj actual del equipo."""
+        r = self._send({
+            "type": "get_cur",
+            "wValue": (self.CLOCK_CS << 8) | 0,
+            "wIndex": (self.CLOCK_UNIT << 8) | 0,
+            "length": 1,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        val = int(r["data"][0])
+        return {"value": val, "name": self.CLOCK_NAMES.get(val, f"desconocido({val})")}
+
+    def set_clock_source(self, value: int) -> dict:
+        """Cambia la fuente de reloj (1=internal, 2=optical1, 3=optical2)."""
+        if value not in self.CLOCK_NAMES:
+            raise ValueError("Fuente inválida: usá 1 (internal), 2 (optical1) o 3 (optical2).")
+        r = self._send({
+            "type": "set_cur",
+            "wValue": (self.CLOCK_CS << 8) | 0,
+            "wIndex": (self.CLOCK_UNIT << 8) | 0,
+            "data": [value],
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return self.get_clock_source()
+
     # ── STORE STANDALONE STATE (unidad 0x36 CS=24) ──
     # El equipo puede funcionar SIN computadora usando su propia memoria interna: guarda un estado
     # completo (ganancias, DI, 48V, y también el volumen del main). El comando lo dio el
