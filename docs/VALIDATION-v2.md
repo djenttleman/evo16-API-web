@@ -2,12 +2,13 @@
 
 ## Realizada sin interfaz física
 
-La EVO 16 no está conectada a este Mac durante el desarrollo. Ninguna prueba de esta rama requiere
-ni reclama una nueva verificación en hardware.
+Las pruebas automatizadas se realizaron sin acceder a la EVO 16. Posteriormente, el usuario
+informó que los parámetros se controlan adecuadamente, con la excepción de la escala de ganancia
+corregida en 2.0.1. Las pruebas automatizadas no equivalen a una comprobación física independiente.
 
 - Pruebas de API, autenticación, orígenes, traversal, límites y errores sin dispositivo.
 - Serialización USB, caché compartida, cancelación de escrituras vencidas y recuperación tras fallo inicial.
-- Codificación reciente: gain −8…50 ↔ byte 0…58; DI CS=4 preservando bits; link CS=3; piso del main.
+- Compatibilidad de codificación v2: gain −8…50 ↔ byte 0…58 (no prueba dB físicos); DI CS=4 preservando bits; link CS=3; piso del main.
 - Perfiles completos v2 y migración v1 que preserva los bytes originales sin reescribir los archivos.
 - Servicio real desde fuentes y desde el paquete congelado, usando `backend/fixtures/usb_helper.py`
   mediante `EVO16_HELPER_PATH` explícito. Credenciales, archivos y puertos de prueba aislados.
@@ -31,10 +32,11 @@ bash -n menubar/build.sh menubar/install.command bin/evo16-remote
 `EVO16_HELPER_PATH` es una sustitución local explícita para diagnósticos/pruebas; nunca viene de HTTP.
 No habilitarla al verificar el equipo real. La producción no contiene un modo demo implícito.
 
-## Pendiente al conectar la EVO 16
+## Comprobaciones físicas de referencia
 
 1. Abrir únicamente la app de esta rama y confirmar conexión; EVO Control oficial cerrada.
-2. Comparar gain en la API y en la pantalla oficial, especialmente −8, 0 y +50 dB, manteniendo un
+2. Comparar la UI 0…50 con la pantalla del equipo. El usuario ya comprobó que la UI anterior −8
+   mostraba 0: negativos físicos pendientes de investigación. Mantener un
    entorno de audio apropiado para comprobar ganancias. Verificar retorno desde la perilla física.
 3. Confirmar DI en los canales con hardware, preservación de flags y comportamiento con pares linkeados.
 4. Verificar phantom y mute local/ADAT con la configuración de SP8 documentada. No inferir cambios
@@ -48,3 +50,10 @@ No habilitarla al verificar el equipo real. La producción no contiene un modo d
 
 No hay programación automática de estas pruebas. Permanecen pendientes hasta que el equipo esté
 conectado y se realice la comprobación física.
+
+## Corrección de presentación 2.0.1
+
+El usuario informa control adecuado de los parámetros, excepto la escala negativa de ganancia.
+Se adapta solo la UI a 0…50. Prueba de regresión sin USB:
+`node --test web/gain-scale.test.cjs` verifica conversión, extremos, retorno de lecturas y rechazo
+de valores de UI fuera del rango confirmado. No cambia la API, los registros USB ni los perfiles.

@@ -1,8 +1,13 @@
 # Protocolo del EVO 16 — referencia verificada
 
 Revisión vigente: **15–16 de octubre de 2026**. Esta evidencia prevalece sobre mayo y sobre cualquier
-comentario o prueba anterior que la contradiga. El contrato público de la API v2 usa dB reales
-(−8…50); el transporte sigue usando el byte 0…58, sin cambiar los registros USB.
+comentario o prueba anterior que la contradiga.
+
+**Corrección posterior del usuario (16 de octubre):** al enviar −8 desde la app, la pantalla del
+EVO 16 muestra 0. La afirmación previa de haber descubierto ganancias físicas negativas queda
+retirada. La UI se limita a los valores confirmados **0…50**. El offset de ocho se conserva en el
+backend únicamente por compatibilidad con la API y los perfiles v2; no demuestra dB físicos.
+La investigación de valores negativos queda pendiente, sin nuevos barridos ni escrituras USB.
 
 Todo lo de este documento está **verificado contra el hardware** (EVO 16, firmware 1.30, macOS, app
 oficial cerrada), salvo lo que diga «pendiente». Reemplaza a las tablas de la investigación EVO8
@@ -41,7 +46,7 @@ original del README, cuyos supuestos equivocados se aclaran al final.
 | Registro             | CS | Datos              | Codificación                                                                 |
 | -------------------- | -- | ------------------ | ---------------------------------------------------------------------------- |
 | Phantom 48V          | 0  | `[p,0,0,0]`        | 0 = off · 1 = on                                                             |
-| **Ganancia**         | 1  | `[0, byte, 0, 0]`  | `byte = dB_UI + 8` ⇒ **byte 0…58 = −8…+50 dB**; el MCU clampa en 58          |
+| **Ganancia**         | 1  | `[0, byte, 0, 0]`  | Control confirmado para la UI: **0…50**. El backend v2 conserva un offset interno; **negativos físicos no descubiertos**          |
 | Mute                 | 2  | `[m,0,0,0]`        | 0 = sin mute · 1 = muteado                                                   |
 | **Link de par**      | 3  | `[l,0,0,0]`        | prenderlo en el maestro basta; para apagarlo hay que escribirlo en **ambos** canales |
 | **DI / instrumento** | 4  | `[b,0,0,0]`        | **bitmask, bit 1** (`2` = ON). Canales 1-2, 9-10, 17-18. **Read-modify-write obligatorio** |
@@ -109,8 +114,8 @@ Falta mapear las 10 opciones de la app (`DAW 1+2` … `CUE D`) a sus códigos: v
 
 | Decía | En realidad |
 | ----- | ----------- |
-| Gain 0…50 dB con `[0, dB, 0, 0]` | `byte = dB_UI + 8` ⇒ **−8…+50 dB**, byte 0…58 |
-| «Ganancia negativa no escribible (error 58)» | Sí se escribe: era el offset +8 el que faltaba |
+| Se afirmó que un offset +8 demostraba gain −8…50 | Afirmación retirada tras la prueba del usuario. UI 0…50; negativos pendientes |
+| Se afirmó que ya se podía escribir ganancia negativa | No se ha verificado: −8 en la app produjo 0 en el equipo |
 | Link en **FU11 (`0x0B`) CS=2** | Link en **EU58 (`0x3A`) CS=3**; el firmware espeja el par |
 | No existía el volumen del main | **`0x36` CS=18**, Q8.8 con signo |
 | No existían medidores | **`0x3C`**, 4 bloques según `wValue` |

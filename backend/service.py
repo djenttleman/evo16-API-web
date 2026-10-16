@@ -35,8 +35,9 @@ VERIFIED_GAIN_PAYLOAD_SIZE = 4       # bytes
 VERIFIED_GAIN_BYTE_OFFSET  = 1       # byte index for dB value (0=first)
 VERIFIED_GAIN_MIN_DB       = 0
 VERIFIED_GAIN_MAX_DB       = 58      # medido 2026-10-15: el firmware CLAMPEA en 58
-# El byte del cable es 0..58 (sin signo), NO el valor público en dB. EVO Control
-# muestra −8..+50 con referencia de 8 dB ⇒ byte = valor_UI + 8. Escribir >58 (incluido
+# El API v2 conserva un offset +8 por compatibilidad; no prueba dB físicos negativos.
+# Corrección del usuario (16-oct): UI −8 produjo 0 en el equipo; UI nueva 0..50.
+# El byte transportado sigue siendo sin signo. Escribir >58 (incluido
 # 248/0xF8) NO pone el mínimo: el firmware lo lleva al MÁXIMO.
 VERIFIED_GAIN_ENTITY       = VERIFIED_EU58  # wIndex
 

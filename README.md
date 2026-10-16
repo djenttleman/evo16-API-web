@@ -4,14 +4,15 @@ App nativa para macOS con interfaz web y API local para controlar una Audient EV
 La app administra un único servicio; al salir libera el USB. Sin interfaz USB, el estado es `device_disconnected` y los controles se bloquean. La app oficial EVO Control debe
 estar cerrada para que el equipo esté disponible.
 
-**Versión 2.0.0 — contrato actualizado a los hallazgos de hardware del 15–16 de octubre de 2026.**
+**App 2.0.1 / contrato API 2.0.0 — contrato actualizado a los hallazgos de hardware del 15–16 de octubre de 2026.**
 La [referencia de protocolo](docs/PROTOCOLO-EVO16.md) prevalece sobre las observaciones anteriores.
 La investigación de mayo y la documentación v1 están [archivadas y deprecadas](docs/history/README-v1.md);
 no deben utilizarse para implementar controles nuevos.
 
 ## Controles actuales
 
-- Ganancia **−8…+50 dB**, codificada como `byte = dB + 8` (0…58), canales 1–24.
+- UI de ganancia **0…50**, canales 1–24. Las ganancias negativas quedan pendientes de investigación.
+  La corrección 2.0.1 conserva la codificación de API/perfiles v2 mediante un adaptador de presentación.
 - Phantom 48 V y mute, canales 1–24.
 - DI en canales **1, 2, 9, 10, 17 y 18**: EU58 CS=4, bit 1, lectura-modificación-escritura.
 - Link de pares en EU58 CS=3; el firmware espeja gain y DI. El cliente no duplica escrituras.

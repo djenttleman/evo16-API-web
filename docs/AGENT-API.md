@@ -54,11 +54,23 @@ USB por cliente. Los medidores comparten capturas durante 150 ms. Una escritura 
 verificación física. La web y la app lo rotulan explícitamente como prueba.
 No hay garantía de simultaneidad física entre los registros de una captura.
 
-## Controles confirmados
+## Ganancia: corrección de presentación 2.0.1
+
+El usuario comprobó que −8 en la UI anterior mostraba 0 en el equipo. Los valores físicos negativos
+no están descubiertos. La UI actual usa **0…50** y adapta el contrato v2 existente:
+`apiGain = uiGain - 8`, `uiGain = clamp(apiGain + 8, 0, 50)`. Así UI 0 envía byte 0 y UI 50 envía
+byte 50. Los valores por encima del límite confirmado no se ofrecen en la UI.
+
+No cambia el protocolo ni se reescriben los perfiles por este ajuste visual. Un cliente que use
+el contrato v2 debe conservar su codificación; su campo `db` es una convención heredada cuya
+interpretación como ganancia física no está verificada. La API y los perfiles se revisarán por
+separado si la investigación confirma otro mapeo. No enviar valores negativos suponiendo atenuación.
+
+## Controles
 
 | Método / ruta | Cuerpo POST | Unidad y significado |
 | --- | --- | --- |
-| `GET / POST /api/gain/{channel}` | `{"db":-8}` | **−8…+50 dB reales**, entero. En el cable: `db + 8` (0…58) |
+| `GET / POST /api/gain/{channel}` | `{"db":-8}` | Contrato legado v2: entero −8…50; en el cable `db + 8`. **No equivale a dB físicos verificados** |
 | `GET / POST /api/phantom/{channel}` | `{"on":true}` | Phantom 48 V |
 | `GET / POST /api/mute/{channel}` | `{"muted":true}` | Mute de entrada |
 | `GET / POST /api/instrument/{channel}` | `{"on":true}` | DI solo en 1, 2, 9, 10, 17, 18; CS=4, bit 1, RMW |

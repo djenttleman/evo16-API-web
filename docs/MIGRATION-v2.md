@@ -6,7 +6,7 @@ corrige el significado de gain y requiere autenticación.
 
 | v1 | v2 |
 | --- | --- |
-| `gain: 0…58`, byte sin offset | `gain: −8…50`, dB mostrados por EVO Control |
+| `gain: 0…58`, byte sin offset | `gain: −8…50`, codificación v2 heredada; no dB físicos verificados |
 | `{"db": 28}` enviaba byte 28 | Para conservar byte 28, enviar `{"db":20}` |
 | Peticiones sin credencial | `Authorization: Bearer …` desde `api-token` o Preferencias |
 | `/docs` | `/api/openapi.json` autenticado; `/api/info` anuncia las rutas reales |
@@ -19,11 +19,11 @@ corrige el significado de gain y requiere autenticación.
 
 Los perfiles originales sin versión conservan sus bytes: se resta ocho al leer gain y se devuelve
 formato v2 (`formatVersion: 2`, `gainEncoding: db`). Leerlos no los reescribe. Al exportar o guardar,
-el resultado ya expresa dB reales. Los perfiles v2 no se vuelven a convertir.
+el resultado conserva la codificación v2. Los perfiles v2 no se vuelven a convertir.
 
 Los perfiles deben contener 24 canales, estados booleanos y pares coherentes. Se rechazan perfiles
 incompletos o corruptos antes de escribir al hardware. Si un archivo v1 fue editado manualmente
-para contener dB reales, marcarlo explícitamente como v2; no es posible adivinar su intención.
+para contener valores de la codificación v2, marcarlo explícitamente como v2; no es posible adivinar su intención.
 
 La primera apertura de la app descarga los agentes `com.david.evo16-web`, `com.david.evo16-remote`
 y `com.david.evo16-launcher`, si están instalados, y conserva sus plists renombrados `.deprecated`.
@@ -33,3 +33,10 @@ nueva no mata procesos por coincidencia de nombre ni al dueño de un puerto ocup
 La compilación crea un artefacto de revisión en `build/`. `--release` incluye el runtime y los
 recursos; `--install` es el paso explícito para reemplazar la instalación del usuario. No se cambia
 la app instalada al cambiar de rama o ejecutar pruebas.
+
+## UI 2.0.1
+
+La prueba posterior del usuario retira la interpretación física del offset: −8 en la app mostró 0
+en el dispositivo. Solo cambia la presentación: 0…50, con `apiGain = uiGain - 8`. Se conservan los
+bytes enviados al mínimo y la compatibilidad de los perfiles. No se vuelven a migrar archivos.
+Los valores físicos negativos quedan pendientes de investigación.

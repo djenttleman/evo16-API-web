@@ -3,8 +3,12 @@
 - Protocol authority is `docs/PROTOCOLO-EVO16.md`, based on hardware findings from October 15–16,
   2026. Older EVO8/May research is historical and deprecated wherever it conflicts. Do not revert
   current controls to make an old comment or test pass; update the obsolete reference instead.
-- API v2 and web use real gain dB −8…50. USB uses `dB + 8`, byte 0…58. Profile v1 stores bytes;
-  profile v2 declares `formatVersion: 2` and `gainEncoding: db`. Never double-convert a v2 profile.
+- Latest user hardware observation (Oct 16): UI −8 showed 0 on the device. Negative physical
+  preamp gain is NOT discovered. UI range is 0…50, with `GainScale` adapting to existing API v2:
+  `apiGain = uiGain - 8`; the existing backend then emits `apiGain + 8`. Keep API/profile encoding
+  unchanged for this display fix. Never describe the legacy offset as verified physical dB.
+  Profile v1 stores bytes; v2 declares `formatVersion: 2`, `gainEncoding: db` (legacy field name).
+  Never double-convert v2 profiles. Negative-gain research via Hermes/REA remains pending.
 - Preserve DI CS=4 bit 1 with read/modify/write, link EU58 CS=3, main 0x36 CS=18 signed Q8.8,
   logarithmic main display, and the documented analog/ADAT mute entity split. Do not guess USB
   registers or apply older EVO8 assumptions to EVO16.

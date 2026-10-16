@@ -53,3 +53,14 @@ probablemente aparezcan más selectores: el `wValue` es la clave a barrer (ya pr
 - **`0x3B` (OutputControl)**: la entidad no existe en este firmware (todo STALL). El volumen del main
   está en `0x36 CS=18` (ver README).
 - **Optimización de `state.db` de Hermes**: decidido por David que no compensa.
+
+## Ganancia negativa del preamp — pendiente (observación del usuario, 16-oct-2026)
+
+La UI anterior mostraba −8, pero el equipo mostraba 0. No se ha descubierto cómo escribir valores
+físicos negativos. El rango confirmado que debe ofrecer la UI es 0…50. Se retiró la afirmación
+de que un offset +8 probaba ganancias negativas. La corrección visual mantiene la API y los
+perfiles existentes; no realizar nuevas pruebas de registros para este cambio.
+
+Referencia aportada por el usuario para una investigación futura: Hermes agent utilizó REA
+([morluto/rea](https://github.com/morluto/rea)), instalado con sus dependencias. Recuperar primero
+esa evidencia y verificar contra el hardware antes de afirmar otro mapeo.

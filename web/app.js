@@ -79,18 +79,18 @@ document.getElementById('auth-form').addEventListener('submit', async event => {
   } catch (error) { document.getElementById('auth-error').textContent = error.message; }
 });
 
-// ── EVO 16 Remote — Knob UI (−8…50 dB, mute, phantom, DI y link de par) ──
+// ── EVO 16 Remote — Knob UI (0…50 dB, mute, phantom, DI y link de par) ──
 // Audient hardware style — large SVG knobs, electric blue fill
 
 const API = '/api';
-const MIN_GAIN = -8;
-const MAX_GAIN = 50;
+const MIN_GAIN = GainScale.min;
+const MAX_GAIN = GainScale.max;
 const RANGE = MAX_GAIN - MIN_GAIN;
 // Canales con hardware de instrumento (DI): locales 1-2 + ADAT 9-10 y 17-18.
 // Igual que Evo16Service.INSTR_CHANNELS del backend (el resto responde 400).
 const DI_CHANNELS = [1, 2, 9, 10, 17, 18];
 const DEG_PER_UNIT = 300 / RANGE;   // 300° sweep (7→5 o'clock)
-const START_ANGLE = 210;            // −8 dB = 7 o'clock (210° clockwise from top)
+const START_ANGLE = 210;            // 0 dB = 7 o'clock (210° clockwise from top)
 
 const KNOB_R = 42;           // SVG circle radius
 const KNOB_CIRC = 2 * Math.PI * KNOB_R;   // ~263.9
@@ -131,7 +131,7 @@ function buildRack() {
       card.id = `ch-${ch}`;
       card.innerHTML = `
       <div class="ch-label">CH ${ch}</div>
-      <div class="knob-wrap" data-ch="${ch}" role="slider" tabindex="0" aria-label="Ganancia canal ${ch}" aria-valuemin="-8" aria-valuemax="50" aria-disabled="true">
+      <div class="knob-wrap" data-ch="${ch}" role="slider" tabindex="0" aria-label="Ganancia canal ${ch}" aria-valuemin="${MIN_GAIN}" aria-valuemax="${MAX_GAIN}" aria-disabled="true">
         <svg class="knob-svg" viewBox="0 0 100 100">
           <circle class="knob-bg" cx="50" cy="50" r="${KNOB_R}"/>
           <circle class="knob-fill" cx="50" cy="50" r="${KNOB_R}"
@@ -172,7 +172,7 @@ function bindKnobs() {
     let startY = 0, startGain = 0, lastCommitted = 0;
 
     function commit(channel, db) {
-      queueWrite(`gain-${channel}`, `${API}/gain/${channel}`, { db: Math.round(db) });
+      queueWrite(`gain-${channel}`, `${API}/gain/${channel}`, { db: GainScale.toApi(Math.round(db)) });
     }
 
     wrap.addEventListener('keydown', e => {
@@ -367,7 +367,7 @@ async function poll() {
       // Skip channels being dragged
       if (els.wrap.classList.contains('dragging')) continue;
 
-      const gain = Math.round(inp.gain);
+      const gain = GainScale.fromApi(inp.gain);
       setVisual(inp.channel, gain);
 
       // Update mute button
@@ -408,7 +408,7 @@ async function poll() {
     // Sync local state
     state = data.inputs.map(i => ({
       ch: i.channel,
-      gain: Math.round(i.gain),
+      gain: GainScale.fromApi(i.gain),
       mute: i.mute,
       phantom: i.phantom,
       instrument: i.instrument === true,
