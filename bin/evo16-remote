@@ -9,6 +9,7 @@
 #   evo16-remote health    el JSON completo de /api/health
 #   evo16-remote logs      sigue el log
 #   evo16-remote install   instala/actualiza el agente launchd (una sola vez)
+#   evo16-remote launcher-install   instala el launcher: API para encender/apagar por HTTP
 #
 # on/off son alias de start/stop (mismo patrón que los otros servicios).
 # El servicio NO arranca solo al iniciar sesión: es on-demand (RunAtLoad=false).
@@ -61,6 +62,16 @@ stop() {
     echo "detenido; el USB queda libre para la app oficial"
 }
 
+install_launcher() {
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+    local src="$PROJ/bin/com.david.evo16-launcher.plist"
+    [ -f "$src" ] || { echo "falta $src"; exit 1; }
+    cp "$src" "$HOME/Library/LaunchAgents/com.david.evo16-launcher.plist"
+    launchctl bootout "gui/$(id -u)/com.david.evo16-launcher" >/dev/null 2>&1
+    launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.david.evo16-launcher.plist" \
+      && echo "launcher instalado: encender/apagar por API en http://127.0.0.1:3100"
+}
+
 case "${1:-status}" in
     start|on)     start ;;
     stop|off)     stop ;;
@@ -86,5 +97,6 @@ PY
     info)     api /api/info; echo ;;
     logs)     tail -f "$LOG" ;;
     install)  install_agent ;;
+    launcher-install) install_launcher ;;
     *)        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

@@ -3,6 +3,7 @@
 import sys
 import os
 import time
+import asyncio
 import tempfile
 import webbrowser
 import subprocess
@@ -357,6 +358,25 @@ async def store_standalone():
     except Exception as e:                         # noqa: BLE001
         raise HTTPException(500, str(e))
 
+@app.post("/api/service/stop")
+async def service_stop():
+    """Detiene ESTE servicio (libera el USB para la app oficial).
+
+    Responde primero y recién después baja, así el cliente recibe el 200. Para volver a
+    levantarlo: `POST http://127.0.0.1:3100/api/start` (launcher) o `evo16-remote start`.
+    """
+    async def _morir() -> None:
+        await asyncio.sleep(0.6)                    # que salga la respuesta HTTP
+        try:
+            if service is not None:
+                service.disconnect()                # libera el helper (y con él el USB)
+        except Exception:                           # noqa: BLE001
+            pass
+        os._exit(0)
+
+    asyncio.create_task(_morir())
+    return {"status": "stopping", "restart": "POST http://127.0.0.1:3100/api/start"}
+
 @app.get("/api/clock")
 async def get_clock():
     """Fuente de reloj actual del equipo (internal / optical1 / optical2)."""
@@ -430,6 +450,9 @@ async def info():
             "medidores": ["GET /api/meters   (niveles en dB de los 24 canales y de las salidas + "
                           "clip; 4 transferencias por llamada: sirve para tiempo real)"],
             "clock": ["GET|POST /api/clock {source}   (1/internal, 2/optical1, 3/optical2)"],
+            "cicloDeVida": ["POST /api/service/stop   (apaga ESTE servicio liberando el USB)",
+                            "para ENCENDERLO: POST http://127.0.0.1:3100/api/start (launcher) — "
+                            "el servicio no puede arrancarse a sí mismo; ver docs/AGENT-API.md"],
             "perfiles": ["GET /api/presets", "GET /api/presets/{nombre}",
                          "POST /api/presets/{nombre} (guarda el estado ACTUAL)",
                          "POST /api/presets/{nombre}/apply", "POST /api/presets/{nombre}/export",

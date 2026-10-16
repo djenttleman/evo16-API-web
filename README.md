@@ -249,6 +249,14 @@ un comando. Es de **una sola vía**: pisa el estado guardado antes y no se puede
 desde la API; se verifica **ciclando la energía** del equipo (al volver debe cargar ese estado).
 En la UI es el botón «GUARDAR EN LA INTERFAZ».
 
+## Encender y apagar por API (para extensiones externas)
+
+El servicio no puede arrancarse a sí mismo, así que hay un **launcher chiquito** (sólo stdlib, no
+toca el USB) en **`http://127.0.0.1:3100`**: `GET /api/status` · `POST /api/start` · `POST /api/stop`
+· `GET /api/logs?n=80`. Además el servicio expone su propio `POST /api/service/stop`.
+
+Se instala una sola vez desde la Terminal: `~/bin/evo16-remote launcher-install`.
+
 ## Medidores en tiempo real
 
 `GET /api/meters` devuelve los niveles **en dB** de los 24 canales de entrada y de las salidas

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.david.evo16-launcher</string>
+
+    <!-- API mínima (sin UI, sólo stdlib) para encender/apagar el servicio del puerto 3000.
+         Es lo único que queda siempre encendido: ~15 MB y NO toca el equipo por USB. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
+        <string>launcher.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/djenttleman/dev/evo16-web</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/djenttleman/Library/Logs/evo16-launcher.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/djenttleman/Library/Logs/evo16-launcher.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

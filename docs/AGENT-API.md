@@ -82,6 +82,44 @@ CS=3); al deslinkear el equipo **no** restaura los valores previos de cada canal
 |---|---|---|---|
 | GET/POST | `/api/main-volume` | `{"db": -20}` | Control que **la app oficial no expone**. Escala de la pantalla del equipo: **0 = −96 dB, 100 = 0 dB** ⇒ `dB = (v − 100) × 0.96` |
 
+## Encender y apagar el servicio (API)
+
+El servicio **no puede arrancarse a sí mismo** (su API vive adentro: si está apagado, no hay quién
+atienda). Por eso el ciclo de vida lo maneja un **launcher chiquito** (sólo stdlib, no toca el USB)
+que escucha en **`http://127.0.0.1:3100`**:
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/api/status` | `{"service": "running"\|"stopped", "device": {...}, "agentInstalled": true}` |
+| POST | `/api/start` | Arranca el servicio y **espera** a que responda (devuelve el estado del equipo) |
+| POST | `/api/stop` | Lo detiene ordenado (SIGTERM: así libera el USB) |
+| GET | `/api/logs?n=80` | Últimas líneas del log del servicio |
+
+Y el servicio (puerto 3000) tiene su propio auto-apagado:
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| POST | `/api/service/stop` | Responde 200 **y después** baja (libera el USB) |
+
+Instalación del launcher, una sola vez desde la Terminal (launchd no se puede tocar desde dentro de
+Hermes):
+
+```bash
+~/bin/evo16-remote launcher-install
+```
+
+### Receta para una extensión externa (por ejemplo la de REAPER)
+
+```bash
+curl -s http://127.0.0.1:3100/api/status              # ¿está arriba el servicio?
+curl -X POST http://127.0.0.1:3100/api/start          # levantarlo antes de tocar el equipo
+#   ... acá va el uso normal: http://127.0.0.1:3000/api/... (gain, phantom, link, meters, clock…)
+curl -X POST http://127.0.0.1:3000/api/service/stop   # o http://127.0.0.1:3100/api/stop
+```
+
+El launcher **no** se apaga solo (es el que puede volver a levantar todo). Para sacarlo:
+`launchctl bootout gui/$(id -u)/com.david.evo16-launcher`.
+
 ## Medidores (niveles en tiempo real)
 
 | Método | Ruta | Devuelve |
