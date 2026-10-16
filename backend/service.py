@@ -30,7 +30,10 @@ VERIFIED_GAIN_CS           = 1       # Control Selector
 VERIFIED_GAIN_PAYLOAD_SIZE = 4       # bytes
 VERIFIED_GAIN_BYTE_OFFSET  = 1       # byte index for dB value (0=first)
 VERIFIED_GAIN_MIN_DB       = 0
-VERIFIED_GAIN_MAX_DB       = 50
+VERIFIED_GAIN_MAX_DB       = 58      # medido 2026-10-15: el firmware CLAMPEA en 58
+# El byte del cable es la ganancia física 0..58 (sin signo). La UI de EVO Control
+# muestra −8..+50 con referencia de 8 dB ⇒ byte = valor_UI + 8. Escribir >58 (incluido
+# 248/0xF8) NO pone el mínimo: el firmware lo lleva al MÁXIMO.
 VERIFIED_GAIN_ENTITY       = VERIFIED_EU58  # wIndex
 
 # ── PHANTOM / 48V (verified on CH1-24, analog + ADAT1 + ADAT2) ──
@@ -240,6 +243,15 @@ class Evo16Service:
 
     def get_all_status(self) -> dict:
         status = {"device": "Audient EVO 16", "inputs": [], "outputs": []}
+        # Volumen del main mix (0x36 CS=18): una sola lectura extra por poll.
+        try:
+            status["mainVolume"] = self.get_main_volume()
+        except Exception:
+            status["mainVolume"] = None
+        # El link es POR PAR y CS3 lo devuelve igual cualquiera de los dos canales, así que se
+        # lee una sola vez por par (en el maestro) y se comparte con el seguidor: el poll suma
+        # 12 lecturas en vez de 24. No bajar el intervalo del poll (ver nota del encabezado).
+        link_cache: dict[int, bool] = {}
         for ch in range(VERIFIED_CHANNEL_MIN, VERIFIED_CHANNEL_MAX + 1):
             try:
                 gain = self.get_gain(ch)
@@ -256,12 +268,21 @@ class Evo16Service:
             entry = {
                 "channel": ch, "gain": gain, "mute": mute, "phantom": phantom,
             }
-            # Instrument mode (experimental, CH1-2 only)
-            if ch <= 2:
+            # Modo instrumento / DI: sólo los canales con hardware (ver INSTR_CHANNELS).
+            if ch in self.INSTR_CHANNELS:
                 try:
                     entry["instrument"] = self.get_instrument(ch)
                 except Exception:
                     entry["instrument"] = None
+            # Link del par estéreo (CS=3): estado del par al que pertenece el canal.
+            a, b = self.link_pair(ch)
+            if a not in link_cache:
+                try:
+                    link_cache[a] = self.get_link(a)
+                except Exception:
+                    link_cache[a] = False
+            entry["linked"] = link_cache[a]
+            entry["linkPair"] = [a, b]
             status["inputs"].append(entry)
         for pair in range(5):
             status["outputs"].append({
@@ -280,49 +301,392 @@ class Evo16Service:
     # Status: PROBED — writes confirmed with 8-byte payload, pending physical verification
     # HW:     EVO 16 front TS jacks (CH1, CH2)
     # Desc:   High-impedance DI mode for guitars/basses (XLR/TRS combo jack switching)
-    # Proto:  EU58 CS=5, 8 bytes [flag, 0, 0, 0, 0, 0, 0, 0]
-    #         flag = 0x01 (instrument ON/high-Z), 0x00 (line/mic), 0xFF (alternate state)
-    # Note:   MUST send full 8 bytes. 4-byte writes are accepted but may not commit.
-    # Ref:    DESIGN.md EU58 CS=5 "may control input impedance/gain staging"
-    #          https://audient.com/products/audio-interfaces/evo16
+    # ── INSTRUMENTO / DI (EU58 CS=4) — VERIFICADO EN HARDWARE 2026-10-15 ──
+    # Proto:  EU58 CS=4, 4 bytes. Es un BITMASK por canal: **bit 1 = instrumento/DI**.
+    #         Se escribe SIEMPRE el word completo (leer → modificar el bit → escribir),
+    #         porque los otros bits llevan otro estado del canal (p. ej. Mic 4 = 0b101).
+    # Valor con DI activo = 2 (bit 1). Coincide con el campo `instrument` del
+    # state.xml de EVO Control, que es la fuente de verdad del modelo de la app.
+    # ⚠️  La implementación anterior (CS=5 con 8 bytes) era INERTE: el equipo aceptaba
+    #     la escritura y devolvía eco, pero NO cambiaba el modo DI. Medido el
+    #     2026-10-15 con el servicio detenido y lectura directa del registro.
+    # Hardware con DI: locales 1-2, y vía ADAT 9-10 (ADAT1) y 17-18 (ADAT2).
+    INSTR_CS        = 4
+    INSTR_ENTITY    = VERIFIED_EU58  # 0x3A00
+    INSTR_BIT       = 1              # bit 1 del bitmask = instrumento / DI
+    INSTR_SIZE      = 4              # payload UAC2 estándar (NO 8)
+    INSTR_CHANNELS  = (1, 2, 9, 10, 17, 18)
 
-    INSTR_CS     = 5
-    INSTR_ENTITY = VERIFIED_EU58  # 0x3A00
-    INSTR_ON     = 1
-    INSTR_OFF    = 0
-    INSTR_SIZE   = 8              # Payload size: 8 bytes required
-
-    def get_instrument(self, channel: int) -> bool | None:
-        """Read instrument mode. Only valid for CH 1-2.
-
-        Returns True (instrument/DI), False (line), or None if not supported.
-        """
-        if channel not in (1, 2):
-            return None
-        wValue = (self.INSTR_CS << 8) | (channel - 1)
+    def _read_flags(self, channel: int) -> int:
+        """Lee el bitmask de CS=4 (4 bytes) del canal indicado (1-based)."""
         r = self._send({
             "type": "get_cur",
-            "wValue": wValue,
+            "wValue": (self.INSTR_CS << 8) | (channel - 1),
             "wIndex": self.INSTR_ENTITY,
             "length": self.INSTR_SIZE,
         })
-        return bool(bytes(r["data"])[0] == self.INSTR_ON)
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return int(bytes(r["data"])[0])
+
+    def get_instrument(self, channel: int) -> bool | None:
+        """Lee el modo instrumento. True = DI activo, None si el canal no tiene DI."""
+        if channel not in self.INSTR_CHANNELS:
+            return None
+        return bool(self._read_flags(channel) & (1 << self.INSTR_BIT))
 
     def set_instrument(self, channel: int, on: bool) -> bool:
-        """Set instrument mode. Only valid for CH 1-2.
+        """Fija el modo instrumento con READ-MODIFY-WRITE (preserva los otros bits).
 
-        Returns True on success, False if channel not supported.
+        Devuelve True si se aplicó, False si el canal no tiene hardware de DI.
         """
-        if channel not in (1, 2):
+        if channel not in self.INSTR_CHANNELS:
             return False
-        wValue = (self.INSTR_CS << 8) | (channel - 1)
-        data = [self.INSTR_ON if on else self.INSTR_OFF, 0, 0, 0, 0, 0, 0, 0]
+        mask = 1 << self.INSTR_BIT
+        cur = self._read_flags(channel)
+        nuevo = (cur | mask) if on else (cur & ~mask)
         r = self._send({
             "type": "set_cur",
-            "wValue": wValue,
+            "wValue": (self.INSTR_CS << 8) | (channel - 1),
             "wIndex": self.INSTR_ENTITY,
-            "data": data,
+            "data": [nuevo, 0, 0, 0],
         })
         if "error" in r:
             raise RuntimeError(r["error"])
         return True
+
+    # ── LINK / par estéreo (EU58 CS=3) — VERIFICADO EN HARDWARE 2026-10-15 ──
+    # Proto:  EU58 CS=3, 4 bytes. Vale 1 en LOS DOS canales del par y 0 en el resto: es el
+    #         bit de "canal estéreo". Con CS3=1 el FIRMWARE ESPEJA el preamp entre el par
+    #         (comprobado con gain y con el DI; phantom no se midió): escribir en el maestro
+    #         mueve también al seguidor y viceversa, así que NO hay que duplicar escrituras
+    #         desde el cliente. Basta con escribirlo en el canal par (maestro).
+    #         Apagar = escribir 0 en los dos canales del par.
+    # Pares: (1,2), (3,4), (5,6), … — 1-based, (impar, impar+1) = (maestro, seguidor).
+    # Descartado: CS5/CS6 NO son el link (son inertes, ver la skill audient-usb-control).
+    LINK_CS     = 3
+    LINK_ENTITY = VERIFIED_EU58  # 0x3A00
+    LINK_SIZE   = 4
+    LINK_MAX_CHANNEL = VERIFIED_CHANNEL_MAX
+
+    @staticmethod
+    def link_pair(channel: int) -> tuple[int, int]:
+        """Par estéreo (1-based) al que pertenece el canal: (maestro impar, seguidor par)."""
+        a = channel if channel % 2 == 1 else channel - 1
+        return a, a + 1
+
+    def get_link(self, channel: int) -> bool:
+        """True si el par al que pertenece el canal está linkeado (lee CS3 del maestro)."""
+        a, _ = self.link_pair(channel)
+        r = self._send({
+            "type": "get_cur",
+            "wValue": (self.LINK_CS << 8) | (a - 1),
+            "wIndex": self.LINK_ENTITY,
+            "length": self.LINK_SIZE,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return bool(bytes(r["data"])[0])
+
+    def set_link(self, channel: int, on: bool) -> tuple[int, int]:
+        """Linkea/deslinkea el par del canal. Devuelve el par (maestro, seguidor) afectado.
+
+        Se escribe CS3 en AMBOS canales del par (es el estado que deja la app oficial),
+        aunque para crear el espejo baste con el maestro.
+        """
+        a, b = self.link_pair(channel)
+        val = [1 if on else 0, 0, 0, 0]
+        for ch in (a, b):
+            r = self._send({
+                "type": "set_cur",
+                "wValue": (self.LINK_CS << 8) | (ch - 1),
+                "wIndex": self.LINK_ENTITY,
+                "data": val,
+            })
+            if "error" in r:
+                raise RuntimeError(r["error"])
+        return a, b
+
+    # ── VOLUMEN DEL MAIN (MonitorController 0x36, CS=18) ──
+    # Proto:  GET/SET CS=18, 2 bytes, entero CON SIGNO little-endian en Q8.8: dB = raw / 256.
+    #         Lo dio el desensamblado de UacXUAudientMonitorController::setMainVolume
+    #         (`mov w2, #0x12` = 18, length 2, `fcvtzs w8, d0, #8` = ×256) y lo confirmó la perilla
+    #         física del equipo: al bajarla el registro pasó de [174,199] = −56.3 dB a
+    #         [0,160] = −96.0 dB.
+    #         Es el volumen del MAIN MIX (las salidas principales). Los volúmenes de CUE usan el
+    #         mismo esquema en CS=19 (cue 1) y siguientes.
+    MAIN_VOL_CS   = 18
+    MAIN_VOL_UNIT = 0x36
+
+    def get_main_volume(self) -> float:
+        """Volumen del main mix en dB (Q8.8 con signo)."""
+        r = self._send({
+            "type": "get_cur",
+            "wValue": (self.MAIN_VOL_CS << 8) | 0,
+            "wIndex": (self.MAIN_VOL_UNIT << 8) | 0,
+            "length": 2,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        d = bytes(r["data"])
+        v = d[0] | (d[1] << 8)
+        if v >= 0x8000:
+            v -= 0x10000
+        return v / 256.0
+
+    def set_main_volume(self, db: float) -> float:
+        """Fija el volumen del main mix. Devuelve el valor cuantizado que se escribió."""
+        raw = int(round(db * 256))
+        raw = max(-0x8000, min(0x7FFF, raw))
+        u = raw & 0xFFFF
+        r = self._send({
+            "type": "set_cur",
+            "wValue": (self.MAIN_VOL_CS << 8) | 0,
+            "wIndex": (self.MAIN_VOL_UNIT << 8) | 0,
+            "data": [u & 0xFF, (u >> 8) & 0xFF],
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return raw / 256.0
+
+    # ── MEDIDORES (niveles por canal) ──
+    # Del desensamblado de MixerModel::updateInputMeterValues / updateOutputMeterValues:
+    #   request: bmRequestType=0xA1, bRequest=0x03, wIndex = unidad 0x3C << 8, wLength = 2 × canales
+    #   wValue = selector:  0 = niveles de ENTRADA, 1 = niveles de SALIDA,
+    #                       2 = clip de entradas, 3 = clip de salidas (1 byte por canal)
+    #   Cada nivel son 2 bytes little-endian = AMPLITUD LINEAL, con 65536 = full scale:
+    #       dB = 20·log10(raw / 65536)     ← es lo que hace DecibelConversions::meterIntToDB
+    #   Verificado en hardware: canales sin señal leen 1 → −96.3 dB, 0 → silencio.
+    METER_UNIT          = 0x3C
+    METER_SEL_IN        = 0
+    METER_SEL_OUT       = 1
+    METER_SEL_IN_CLIP   = 2
+    METER_SEL_OUT_CLIP  = 3
+    NUM_INPUTS          = 24
+    NUM_OUTPUTS         = 16
+
+    def _meter_block(self, selector: int, n_bytes: int) -> list[int]:
+        r = self._send({
+            "type": "ctrl",
+            "bmReqType": 0xA1,
+            "bReq": 0x03,
+            "wValue": selector,
+            "wIndex": self.METER_UNIT << 8,
+            "length": n_bytes,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return list(r["data"])
+
+    def get_meters(self) -> dict:
+        """Niveles en dB de los 24 canales de entrada y de las salidas, más el estado de clip.
+
+        Una sola lectura por bloque (4 transferencias), así que se puede consultar seguido para
+        tener medidores en tiempo real.
+        """
+        import math
+
+        def a_db(lo: int, hi: int) -> float:
+            raw = lo | (hi << 8)
+            if raw <= 0:
+                return -120.0                     # silencio (el firmware usa 20·log10(0) = -inf)
+            return round(20 * math.log10(raw / 65536.0), 1)
+
+        e_in = self._meter_block(self.METER_SEL_IN, self.NUM_INPUTS * 2)
+        e_out = self._meter_block(self.METER_SEL_OUT, self.NUM_OUTPUTS * 2)
+        c_in = self._meter_block(self.METER_SEL_IN_CLIP, self.NUM_INPUTS)
+        c_out = self._meter_block(self.METER_SEL_OUT_CLIP, self.NUM_OUTPUTS)
+        return {
+            "inputs": [a_db(e_in[2 * i], e_in[2 * i + 1]) for i in range(self.NUM_INPUTS)],
+            "outputs": [a_db(e_out[2 * i], e_out[2 * i + 1]) for i in range(self.NUM_OUTPUTS)],
+            "inputClips": c_in[: self.NUM_INPUTS],
+            "outputClips": c_out[: self.NUM_OUTPUTS],
+            "note": "dB = 20*log10(raw/65536); -120.0 = silencio. Una llamada = 4 transferencias.",
+        }
+
+    # ── CLOCK SOURCE (ClockSelector 0x28, CS=1) ──
+    # 1 byte: 1 = Internal, 2 = Óptica 1, 3 = Óptica 2 (leído del equipo; CS=0 no existe).
+    # La clase de la app es UacLib::UacClockSelector (setClockSource/clockSourceChanged).
+    CLOCK_UNIT  = 0x28
+    CLOCK_CS    = 1
+    CLOCK_NAMES = {1: "internal", 2: "optical1", 3: "optical2"}
+
+    def get_clock_source(self) -> dict:
+        """Fuente de reloj actual del equipo."""
+        r = self._send({
+            "type": "get_cur",
+            "wValue": (self.CLOCK_CS << 8) | 0,
+            "wIndex": (self.CLOCK_UNIT << 8) | 0,
+            "length": 1,
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        val = int(r["data"][0])
+        return {"value": val, "name": self.CLOCK_NAMES.get(val, f"desconocido({val})")}
+
+    def set_clock_source(self, value: int) -> dict:
+        """Cambia la fuente de reloj (1=internal, 2=optical1, 3=optical2)."""
+        if value not in self.CLOCK_NAMES:
+            raise ValueError("Fuente inválida: usá 1 (internal), 2 (optical1) o 3 (optical2).")
+        r = self._send({
+            "type": "set_cur",
+            "wValue": (self.CLOCK_CS << 8) | 0,
+            "wIndex": (self.CLOCK_UNIT << 8) | 0,
+            "data": [value],
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return self.get_clock_source()
+
+    # ── STORE STANDALONE STATE (unidad 0x36 CS=24) ──
+    # El equipo puede funcionar SIN computadora usando su propia memoria interna: guarda un estado
+    # completo (ganancias, DI, 48V, y también el volumen del main). El comando lo dio el
+    # desensamblado de UacXUAudientMonitorController::setStandAloneState: SET_CUR a
+    # MonitorController (0x36) con CS=24, índice 0 y 4 bytes en cero — es un TRIGGER sin dato
+    # (`stur wzr, [x29, #-0x4]`), no un registro que se lea o escriba con un valor.
+    # Es de UNA SOLA VÍA: pisa el estado guardado antes y no se puede leer ni restaurar desde acá.
+    # Para verificar hace falta ciclar la energía del equipo: al volver debe cargar ESTO.
+    STANDALONE_CS   = 24
+    STANDALONE_UNIT = 0x36
+
+    def store_standalone(self) -> dict:
+        """Guarda el estado ACTUAL en la memoria de la interfaz (trigger CS=24)."""
+        r = self._send({
+            "type": "set_cur",
+            "wValue": (self.STANDALONE_CS << 8) | 0,
+            "wIndex": (self.STANDALONE_UNIT << 8) | 0,
+            "data": [0, 0, 0, 0],
+        })
+        if "error" in r:
+            raise RuntimeError(r["error"])
+        return {"stored": True, "verify": "ciclar la energía del equipo y comprobar que vuelve con "
+                                          "el estado actual"}
+
+    # ── ESTADO / RECONEXIÓN (para monitoreo y para agentes que consumen esta API) ──
+
+    def health(self) -> dict:
+        """Estado de conexión EN VIVO.
+
+        No confía en `self._connected`: hace una lectura real al equipo (el volumen del main, que
+        es una lectura barata y siempre disponible) para distinguir "el helper responde" de "el
+        helper está vivo pero el equipo no contesta" (p. ej. la app oficial tiene el USB, o el
+        endpoint quedó raro). Devuelve además el motivo cuando falla.
+        """
+        info: dict = {
+            "connected": False,
+            "helper": self._proc is not None and self._proc.poll() is None,
+            "entity": f"0x{self.MAIN_VOL_UNIT:02X}",
+        }
+        try:
+            info["mainVolume"] = self.get_main_volume()
+            info["connected"] = True
+        except Exception as e:                     # noqa: BLE001
+            info["error"] = str(e)
+            info["hint"] = ("Si la app oficial EVO Control está abierta, es la dueña del USB: "
+                            "cerrala y llamá a /api/reconnect.")
+        return info
+
+    def reconnect(self) -> dict:
+        """Cierra el helper y lo vuelve a levantar, y devuelve el estado ya verificado.
+
+        Es lo que hay que llamar después de cerrar la app oficial: el server conecta una sola vez
+        al arrancar, así que si el equipo estaba ocupado se queda sin dispositivo hasta esto.
+        """
+        import time as _t
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+        _t.sleep(0.6)
+        self._connected = False
+        try:
+            self.connect()
+        except Exception as e:                     # noqa: BLE001
+            return {"connected": False, "error": f"no se pudo abrir el dispositivo: {e}"}
+        return self.health()
+
+    # ── PERFILES (capturar / inyectar el estado de los preamps) ──
+    # Se apoya en get_all_status() para capturar y en los setters para inyectar. El formato de
+    # cada canal es el que espera presets.py (ver ese módulo).
+
+    def capture_state(self) -> list[dict]:
+        """Estado guardable de los 24 canales (lo que va dentro de un perfil)."""
+        out = []
+        for entry in self.get_all_status()["inputs"]:
+            out.append({
+                "channel": entry["channel"],
+                "gain": int(entry["gain"]),
+                "phantom": bool(entry["phantom"]),
+                "mute": bool(entry["mute"]),
+                "instrument": bool(entry.get("instrument") or False),
+                "linked": bool(entry.get("linked") or False),
+                "linkPair": entry.get("linkPair"),
+            })
+        return out
+
+    def apply_state(self, channels: list[dict]) -> dict:
+        """Escribe un perfil en el equipo. Devuelve {applied: [...], errors: [...]}.
+
+        Orden pensado para no meter saltos de nivel innecesarios:
+          1. link de cada par (el espejo queda armado antes de escribir los valores finales)
+          2. mute de los canales que van a quedar muteados (así el resto de los cambios no suena)
+          3. phantom / gain / instrument por canal
+          4. unmute de los que terminan sin mute
+
+        Cada operación se intenta por separado: si una falla, el resto sigue y el error queda
+        en el resumen (un canal raro no debe abortar el perfil entero).
+        """
+        by_ch: dict[int, dict] = {}
+        for c in channels:
+            try:
+                ch = int(c.get("channel", 0))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= ch <= self.LINK_MAX_CHANNEL:
+                by_ch[ch] = c
+
+        applied: list[str] = []
+        errors: list[str] = []
+
+        def do(desc: str, fn) -> None:
+            try:
+                fn()
+                applied.append(desc)
+            except Exception as e:
+                errors.append(f"{desc}: {e}")
+
+        # 1. link (una vez por par)
+        pares = set()
+        for ch in sorted(by_ch):
+            a, _b = self.link_pair(ch)
+            if a in pares:
+                continue
+            pares.add(a)
+            # Basta con mirar cualquiera de los dos canales del par.
+            on = bool(by_ch[ch].get("linked"))
+            do(f"link {a}-{a + 1}={int(on)}", lambda a=a, on=on: self.set_link(a, on))
+
+        # 2. mute de los que van a quedar muteados
+        for ch, c in sorted(by_ch.items()):
+            if c.get("mute"):
+                do(f"mute {ch}=1", lambda ch=ch: self.set_mute(ch, True))
+
+        # 3. valores por canal
+        for ch, c in sorted(by_ch.items()):
+            if "phantom" in c:
+                v = bool(c["phantom"])
+                do(f"phantom {ch}={int(v)}", lambda ch=ch, v=v: self.set_phantom(ch, v))
+            if "gain" in c:
+                v = max(0, min(58, int(c["gain"])))
+                do(f"gain {ch}={v}", lambda ch=ch, v=v: self.set_gain(ch, v))
+            # El DI sólo existe en algunos canales; en el resto el setter devuelve False.
+            if ch in self.INSTR_CHANNELS and "instrument" in c:
+                v = bool(c["instrument"])
+                do(f"instrument {ch}={int(v)}", lambda ch=ch, v=v: self.set_instrument(ch, v))
+
+        # 4. unmute de los que terminan sin mute
+        for ch, c in sorted(by_ch.items()):
+            if not c.get("mute"):
+                do(f"mute {ch}=0", lambda ch=ch: self.set_mute(ch, False))
+
+        return {"applied": applied, "errors": errors}

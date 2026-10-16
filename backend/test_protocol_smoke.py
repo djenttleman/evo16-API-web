@@ -52,7 +52,7 @@ def main():
     check("Gain payload size",  service.VERIFIED_GAIN_PAYLOAD_SIZE,   4)
     check("Gain byte offset",   service.VERIFIED_GAIN_BYTE_OFFSET,    1)
     check("Gain min dB",        service.VERIFIED_GAIN_MIN_DB,         0)
-    check("Gain max dB",        service.VERIFIED_GAIN_MAX_DB,        50)
+    check("Gain max dB",        service.VERIFIED_GAIN_MAX_DB,        58)   # re-verificado en hardware 2026-10-15 (el firmware clampea en 58)
     check("Gain entity",        service.VERIFIED_GAIN_ENTITY,  0x3A00)
 
     # ── Phantom ──
@@ -69,6 +69,32 @@ def main():
     check("Mute byte offset",     service.VERIFIED_MUTE_BYTE_OFFSET,     0)
     check("Mute entity analog",   service.VERIFIED_MUTE_ENTITY_ANALOG, 0x3A00)
     check("Mute entity ADAT",     service.VERIFIED_MUTE_ENTITY_ADAT,   0x0B00)
+
+    # ── Instrument / DI (re-verificado en hardware 2026-10-15) ──
+    # CS=4 es un bitmask por canal; bit 1 = instrumento. La implementación vieja
+    # (CS=5, 8 bytes) era inerte: aceptaba la escritura sin cambiar el modo DI.
+    print("\n── Instrument / DI Protocol ──")
+    check("Instrument CS",           service.Evo16Service.INSTR_CS,            4)
+    check("Instrument payload size", service.Evo16Service.INSTR_SIZE,          4)
+    check("Instrument bit",          service.Evo16Service.INSTR_BIT,           1)
+    check("Instrument entity",       service.Evo16Service.INSTR_ENTITY,  0x3A00)
+    check("Instrument channels",     service.Evo16Service.INSTR_CHANNELS, (1, 2, 9, 10, 17, 18))
+    # wValue: CS=4 → DI CH1 = (4<<8)|0 = 1024 ; DI CH9 = (4<<8)|8 = 1032
+    check("Instr CH1 wValue", (service.Evo16Service.INSTR_CS << 8) | 0,  1024)
+    check("Instr CH9 wValue", (service.Evo16Service.INSTR_CS << 8) | 8,  1032)
+
+    # ── Link / par estéreo (re-verificado en hardware 2026-10-15) ──
+    # CS=3 vale 1 en los dos canales del par; con él el firmware espeja el preamp.
+    print("\n── Link / Stereo Pair Protocol ──")
+    check("Link CS",           service.Evo16Service.LINK_CS,              3)
+    check("Link payload size", service.Evo16Service.LINK_SIZE,            4)
+    check("Link entity",       service.Evo16Service.LINK_ENTITY,    0x3A00)
+    check("Link pair CH1",     service.Evo16Service.link_pair(1),     (1, 2))
+    check("Link pair CH2",     service.Evo16Service.link_pair(2),     (1, 2))
+    check("Link pair CH9",     service.Evo16Service.link_pair(9),     (9, 10))
+    check("Link pair CH24",    service.Evo16Service.link_pair(24),   (23, 24))
+    # wValue: CS=3 → link CH1 = (3<<8)|0 = 768
+    check("Link CH1 wValue",  (service.Evo16Service.LINK_CS << 8) | 0,     768)
 
     # ── Channel ranges ──
     print("\n── Channel Ranges ──")

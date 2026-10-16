@@ -1,5 +1,12 @@
 # EVO 16 Remote — macOS Web Controller
 
+Control remoto de una **Audient EVO 16** por USB: preamps (ganancia, 48V, DI, mute), link de par,
+**volumen del main out**, perfiles de preamps guardables/exportables, y una **API HTTP pensada para
+que la consuma un agente** → [`docs/AGENT-API.md`](docs/AGENT-API.md).
+
+Servicio on-demand: `evo16-remote start|stop|status|url|health` (ver `bin/evo16-remote`).
+Pendientes y lo ya investigado para retomarlos: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 > **English** | [Español](#español)
 
 ---
@@ -157,6 +164,135 @@ Base URL: `http://localhost:3000`
 | POST   | `/api/gain/{ch}`    | `{"db": 35}`      | `{channel, gain, status}`       | Set gain 0–50 dB         |
 | POST   | `/api/mute/{ch}`    | `{"muted": true}` | `{channel, muted, status}`      | Mute toggle              |
 | POST   | `/api/phantom/{ch}` | `{"on": true}`    | `{channel, phantom, status}`    | 48V toggle               |
+| GET    | `/api/instrument/{ch}` | —              | `{channel, instrument, status}` | DI: `true`/`false`/`null` (canales sin hardware de DI) |
+| POST   | `/api/instrument/{ch}` | `{"on": true}` | `{channel, instrument, status}` | Modo instrumento (DI). Sólo canales **1-2, 9-10, 17-18** (el resto: 400) |
+| GET    | `/api/link/{ch}`    | —                 | `{channel, linked, pair, status}` | Link del par al que pertenece el canal |
+| POST   | `/api/link/{ch}`    | `{"on": true}`    | `{channel, linked, pair, status}` | Linkea/deslinkea el par (escribe CS=3 en ambos canales) |
+
+**Link de par estéreo**: los pares son `(1,2)`, `(3,4)`, `(5,6)`, … El estado vive en el equipo
+(EU58 CS=3) y con el par linkeado el **firmware espeja el preamp** (gain y DI comprobados): el
+cliente no debe duplicar escrituras. Al crear el link el equipo unifica el valor del par; si se
+quiere un valor concreto, escribirlo después de linkear. Verificado en hardware (firmware 1.30).
+
+En `/api/status` cada canal trae `instrument` (sólo donde hay hardware de DI), `linked` y
+`linkPair`. El poll lee CS=3 una vez por par (12 lecturas extra, no 24).
+
+## Perfiles de preamps (save state por escena)
+
+Un perfil guarda el estado de los **24 canales** (gain, 48V, DI, link de par y mute) para poder
+reinyectarlo cuando haga falta — por ejemplo al cambiar de escena.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/api/presets` | Perfiles guardados + la carpeta donde viven los archivos |
+| GET | `/api/presets/{nombre}` | Contenido completo del perfil (JSON) |
+| POST | `/api/presets/{nombre}` | **Guarda el estado ACTUAL del equipo** como ese perfil (sobrescribe) |
+| POST | `/api/presets/{nombre}/apply` | **Inyecta** el perfil en el equipo |
+| POST | `/api/presets/{nombre}/export` | Copia el perfil a un archivo en la ubicación que se indique (`{"path": "~/Documents/sala.json", "overwrite": false}`) |
+| POST | `/api/presets/import` | Trae al banco local un perfil desde cualquier archivo (`{"path": "…", "name": "opcional"}`) |
+| DELETE | `/api/presets/{nombre}` | Borra el archivo del perfil |
+
+**Almacenamiento en archivos** (JSON, uno por perfil, editables a mano):
+
+```
+~/Library/Application Support/EVO16Remote/presets/<nombre>.json
+```
+
+Se puede cambiar de carpeta con la variable de entorno `EVO16_PRESETS_DIR` (por ejemplo para
+versionarlos dentro del proyecto):
+
+```bash
+EVO16_PRESETS_DIR="$HOME/dev/evo16-web/presets" \
+  python3 backend/main.py
+```
+
+Los nombres se validan (letras, números, espacios, `-`, `_`, paréntesis; máx. 64) para que un
+nombre no pueda escribir fuera de la carpeta. La escritura es atómica (archivo temporal + rename).
+
+**Orden de aplicación** (importa): primero el link de cada par, después el mute de los que van a
+quedar muteados, luego phantom/gain/DI, y al final el unmute. Escribir el link primero es
+necesario porque al linkear el equipo unifica el valor del par: los valores finales tienen que
+escribirse después para que queden los del perfil.
+
+**UI**: la barra «PERFIL DE PREAMPS» sobre el rack permite elegir, `APLICAR`, `GUARDAR ESTADO`
+(captura el estado actual y lo guarda con el nombre que se escriba), `EXPORTAR` (a la ruta que se
+indique; nunca pisa un archivo existente salvo que se pida), `IMPORTAR` y `BORRAR`.
+
+## Volumen del main out (control que la app oficial NO expone)
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/api/main-volume` | Volumen del main mix en dB |
+| POST | `/api/main-volume` | `{"db": -20}` → fija el volumen |
+
+**Protocolo**: `MonitorController` (unidad `0x36`), **`CS=18`**, payload de **2 bytes**, entero
+**con signo** little-endian en **Q8.8** (`dB = raw / 256`). Lo reveló el desensamblado de
+`UacXUAudientMonitorController::setMainVolume` (`mov w2, #0x12` = 18, `fcvtzs w8, d0, #8` = ×256) y
+lo confirmó la **perilla física** del equipo: al bajarla el registro pasó de `[174,199]` (−56.3 dB) a
+`[0,160]` (−96.0 dB). Los volúmenes de CUE usan el mismo esquema en `CS=19` y siguientes.
+
+**Escala de la pantalla del equipo** (0–100, confirmada en hardware): `0 = −96 dB` y `100 = 0 dB`,
+lineal → `dB = (v − 100) × 0.96`. El slider de la UI usa esa misma escala y **manda el valor
+mientras se desliza** (throttle ~90 ms, siempre el último), así el equipo avanza en conjunto con el
+slider como si fuera la perilla.
+
+En `/api/status` el campo `mainVolume` trae el valor actual (una lectura extra por poll).
+
+## Memoria interna del equipo (standalone)
+
+`POST /api/store-standalone` guarda el estado **actual** en la memoria interna de la interfaz, para
+que el equipo funcione **solo, sin computadora** (incluye ganancias, DI, 48V y el volumen del main).
+
+Trigger descubierto en el binario (`UacXUAudientMonitorController::setStandAloneState`): `SET_CUR` a
+`MonitorController` (unidad `0x36`), **`CS=24`**, índice 0, **4 bytes en cero** — no lleva valor, es
+un comando. Es de **una sola vía**: pisa el estado guardado antes y no se puede leer ni restaurar
+desde la API; se verifica **ciclando la energía** del equipo (al volver debe cargar ese estado).
+En la UI es el botón «GUARDAR EN LA INTERFAZ».
+
+## App de barra de menú
+
+`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj, sin ícono en el Dock, con tres
+acciones: **Encender servicio**, **Apagar servicio** y **Salir**. El ítem muestra el estado real
+(ícono relleno = equipo OK, hueco = servicio arriba sin equipo) y ofrece «Abrir interfaz».
+
+Es además la **puerta programática** para otras apps, por esquema de URL (sin exponer ningún endpoint
+HTTP de ciclo de vida):
+
+```bash
+open -g "evo16remote://start"     # encender
+open -g "evo16remote://stop"      # apagar (libera el USB)
+```
+
+Compilar/instalar: `./menubar/build.sh --open` (Command Line Tools; queda en `~/Applications`).
+
+## Encender y apagar por API (alternativa HTTP)
+
+Si se prefiere HTTP, `launcher.py` expone `GET /api/status` · `POST /api/start` · `POST /api/stop` ·
+`GET /api/logs?n=80` en **`http://127.0.0.1:3100`** (sólo stdlib, no toca el USB). Se instala una vez
+con `~/bin/evo16-remote launcher-install`. El servicio, por su lado, expone su propio
+`POST /api/service/stop`.
+
+## Medidores en tiempo real
+
+`GET /api/meters` devuelve los niveles **en dB** de los 24 canales de entrada y de las salidas
+(16), más el estado de clip de cada uno. Una llamada son 4 transferencias USB (~3 ms medidos), así
+que sirve para medidores en vivo.
+
+Protocolo (del desensamblado de `MixerModel::updateInputMeterValues` / `updateOutputMeterValues`):
+`GET_MEM` con `bmRequestType=0xA1`, `bRequest=0x03`, `wIndex = 0x3C00` (unidad `0x3C`) y
+`wLength = 2 × canales`; el **`wValue` elige el bloque**: `0` = niveles de entrada, `1` = niveles de
+salida, `2` = clip de entradas (1 byte/canal), `3` = clip de salidas. Cada nivel son **2 bytes
+little-endian = amplitud lineal** con 65536 = full scale ⇒ **`dB = 20·log10(raw / 65536)`** (lo que
+hace `DecibelConversions::meterIntToDB`). Verificado en hardware: un canal sin señal lee 1
+(−96.3 dB) y 0 significa silencio.
+
+## Fuente de reloj
+
+`GET /api/clock` · `POST /api/clock {"source": "internal" | "optical1" | "optical2"}` (o 1/2/3).
+
+`ClockSelector` (unidad `0x28`), **`CS=1`**, 1 byte: `1` = Internal, `2` = Óptica 1, `3` = Óptica 2
+(la clase de la app es `UacLib::UacClockSelector`). Ojo: cambiar el reloj a óptica sin nada
+conectado deja al equipo sin sincronía.
 
 Channel range: 1–24.
 
