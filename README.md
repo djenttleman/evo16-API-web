@@ -70,6 +70,11 @@ Tablet  ──HTTP──►  FastAPI  ──JSON stdin──►  mac-evo16 (C)  
 
 ## USB Protocol — Full Reference
 
+> 📌 **Referencia verificada del EVO 16** (gain real −8…+50 dB, link en `0x3A` CS=3, volumen del main,
+> medidores, reloj, standalone): **[`docs/PROTOCOLO-EVO16.md`](docs/PROTOCOLO-EVO16.md)**.
+> Lo que sigue es la investigación **original del EVO8** (mayo 2026): sirve como historia, pero sus
+> supuestos de gain, link (FU11) y alcance de entidades están corregidos en ese documento.
+
 ### Device Identification
 
 | Property   | Value                      |
@@ -107,7 +112,7 @@ wIndex = `0x3A00` (14848)
 
 | Control     | CS  | Data Bytes [0..3] | Mapping                         |
 | ----------- | --- | ----------------- | ------------------------------- |
-| **Gain**    | 1   | `[0, dB, 0, 0]`   | dB = 0..50 → 0..+50 dB (linear) |
+| **Gain**    | 1   | `[0, byte, 0, 0]` | ⚠️ `byte = dB_UI + 8` ⇒ **−8…+50 dB** (byte 0…58). Ver `docs/PROTOCOLO-EVO16.md` |
 | **Mute**    | 2   | `[m, 0, 0, 0]`    | m=0 unmute, m=1 mute            |
 | **Phantom** | 0   | `[p, 0, 0, 0]`    | p=0 off, p=1 on (48V)           |
 
@@ -121,14 +126,14 @@ wIndex = `0x3A00` (14848)
 
 ### FU11 — Feature Unit 11 (Digital Trim / Stereo Link)
 
-wIndex = `0x0B00` (2816)
+> ❌ **Corregido**: el link de par **no** vive acá. Vive en **EU58 (`0x3A`) CS=3** (ver
+> `docs/PROTOCOLO-EVO16.md`). Esta tabla es de la investigación original del EVO8 y no debe usarse
+> para implementar el link.
 
-| Control  | CS  | Data Bytes         | Observed Behavior                        |
+| Control  | CS  | Data Bytes         | Observación histórica                    |
 | -------- | --- | ------------------ | ---------------------------------------- |
 | **Mute** | ?   | `[136, 0, 0, 0]`   | Toggles mute in some contexts            |
-| **CS=2** | 2   | `[0, value, 0, 0]` | Stereo linking between adjacent channels |
-
-> ⚠️ FU11 controls are still under investigation. Writing to FU11 CS=2 linked channels 1&2 unexpectedly.
+| **CS=2** | 2   | `[0, value, 0, 0]` | Supuesto linkeo estéreo (**descartado**) |
 
 ### Channel Map
 

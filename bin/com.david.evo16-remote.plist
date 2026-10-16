@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.david.evo16-remote</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
+        <string>backend/main.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/djenttleman/dev/evo16-web</string>
+
+    <!-- OFF por defecto: nada corre hasta que se pida (./evo16-remote start).
+         KeepAlive=false para que "stop" sea de verdad y no reviva solo. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/djenttleman/Library/Logs/evo16-remote.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/djenttleman/Library/Logs/evo16-remote.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
