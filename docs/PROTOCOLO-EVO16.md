@@ -60,20 +60,27 @@ El mute conserva la separación implementada y verificada: canales 1–8 en EU58
 y 9–24 en FU11 (`0x0B00`), CS=2, cuatro bytes. La corrección reciente de **link a CS=3**
 no implica cambiar la entidad del mute ADAT.
 
-### CS=5 — "soundcheck" / SmartGain: **es estado, no un comando** (verificado 16-oct-2026)
+### SmartGain — `CS=4` bit 0 (canal elegido) · `CS=5` (estado) · `CS=7` (elegibles) · `CS=1` (rampa)
 
-En el binario de la app oficial el SmartGain se llama `InputControlModel::SoundcheckState`, es **por
-canal** y vive en **CS=5** de esta unidad. Comprobado en hardware, con **señal real** en el canal 2:
+**Verificado en hardware el 16-oct-2026, con señal real y captura a 0,5 s de los 9 CS × 24 canales.**
 
-| Escritura en CS=5 | Qué hace el equipo |
-|---|---|
-| `0` / `1` / `2` / `3` | Guarda el valor tal cual. **La ganancia no se mueve**; no pasa nada más |
-| Lectura en reposo | `255` = "sin estado" |
+El SmartGain vive en el **firmware del equipo** y lo arranca **el botón físico**: presionar (elegir
+canales) → elegir canal → presionar otra vez (medir). **No existe comando de arranque por host.**
+Se agotaron las pruebas: `CS=5` con `0/1/2/3/4/5/6/255` (con canal 0 y con canal real), `CS=4` armado
++ `CS=5=1`, y `CS=6/7/8`; y en la captura del flujo real **el arranque no deja huella en ningún
+registro** (el firmware lo resuelve en su modelo interno: `Application::Controller::updateSmartGainState`
+es un *callback de suscripción*, no un manejador USB).
 
-La app oficial **sólo lo *poll*ea** (y lo limpia al terminar) para pintar su animación: el equipo
-**no expone un disparador** de SmartGain por USB. El análisis lo hace el software —medir el nivel
-con los medidores de `0x3C` y escribir la ganancia de `CS=1`—, que es como está implementado en
-`POST /api/smartgain*`.
+| Registro | Qué es | Comprobado |
+|---|---|---|
+| `CS=5` | **Estado** del soundcheck: `1` = *Select Channels*, `2/3` = *Smartgain Listening*, `4` = *Issue Detected*, `5/6` = *Successful*, `255` = inactivo | Escribir cualquier valor solo lo guarda: el equipo **no reacciona**. Es lo que la app *pol*ea (`pollingTimerCallback`) para pintar su animación |
+| `CS=4` **bit 0** | **Canal elegido** para el SmartGain (por canal) | Capturado en vivo con el botón físico; **el host lo escribe y el equipo lo respeta** |
+| `CS=4` **bit 1** | Instrumento / DI (ya documentado) | — |
+| `CS=7` | **Qué canales pueden**: `7` = elegible + instrumento (canales 1-2), `3` = elegible (3-8), `0` = no elegible (ADAT 9-24) | Solo los 8 locales; **solo lectura** |
+| `CS=1` | Ganancia: el equipo la **rampea** `5→10→20→30→40→50→58` (~4 s) mientras mide y, si no hay señal, **restaura el valor original** | Byte = dB_UI + 8; `58` = +50 dB = techo |
+
+Como el arranque es del panel, la automatización se hace **midiendo y ajustando la ganancia** (mismo
+efecto), que es lo que implementa `POST /api/smartgain*`.
 
 ## Reloj — unidad `0x28` (ClockSelector)
 
