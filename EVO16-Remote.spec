@@ -1,65 +1,13 @@
-# -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for EVO 16 Remote standalone macOS binary."""
-
-import os
+# Reproducible service bundle used by menubar/build.sh --release (no separate launcher app).
 from pathlib import Path
-
-PROJECT_ROOT = Path(SPECPATH).parent
-
-a = Analysis(
-    ['backend/main.py'],
-    pathex=[str(PROJECT_ROOT)],
-    binaries=[],
-    datas=[
-        ('web/index.html', 'web'),
-        ('web/app.js', 'web'),
-        ('web/style.css', 'web'),
-        ('mac-evo16/mac-evo16', 'mac-evo16'),
-    ],
-    hiddenimports=['fastapi', 'uvicorn', 'pydantic', 'starlette'],
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    noarchive=False,
-    optimize=0,
-)
-
+ROOT = Path(SPECPATH)
+a = Analysis([str(ROOT / 'backend/main.py')], pathex=[str(ROOT)],
+    binaries=[(str(ROOT / 'mac-evo16/mac-evo16'), 'mac-evo16')],
+    datas=[(str(ROOT / 'web'), 'web')],
+    hiddenimports=['backend.config', 'backend.runtime', 'backend.security', 'backend.presets',
+                   'uvicorn.logging', 'uvicorn.loops.asyncio', 'uvicorn.protocols.http.h11_impl',
+                   'uvicorn.lifespan.on'],
+    excludes=['tkinter', 'matplotlib', 'numpy', 'pandas'])
 pyz = PYZ(a.pure)
-
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name='EVO16-Remote',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
-app = BUNDLE(
-    exe,
-    name='EVO16-Remote.app',
-    icon=None,
-    bundle_identifier='com.david.evo16-remote',
-    version='1.0.0',
-    info_plist={
-        'CFBundleName': 'EVO 16 Remote',
-        'CFBundleDisplayName': 'EVO 16 Remote',
-        'CFBundleShortVersionString': '1.0.0',
-        'CFBundleVersion': '1.0.0',
-        'LSMinimumSystemVersion': '14.0',
-        'NSHighResolutionCapable': True,
-    },
-)
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='EVO16Service', console=True)
+coll = COLLECT(exe, a.binaries, a.datas, name='EVO16Service')

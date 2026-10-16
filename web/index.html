@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 <title>EVO 16 Remote</title>
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
 <div class="app">
@@ -14,8 +14,18 @@
       <h1>EVO 16</h1>
       <span class="header-sub">Remote Control</span>
     </div>
-    <span id="status-badge" class="badge live">● LIVE</span>
+    <span id="status-badge" class="badge offline" role="status">CONECTANDO</span>
   </header>
+  <p id="test-banner" class="test-banner" role="status" hidden>Modo de prueba: helper externo. Este estado no verifica la conexión física.</p>
+  <p id="connection-info" role="status" class="connection-info"></p>
+  <form id="auth-form" class="auth-form" hidden>
+    <label for="api-credential">Credencial de conexión</label>
+    <p>Copiala desde Preferencias de EVO 16 Remote en el Mac conectado a la interfaz.</p>
+    <input id="api-credential" type="password" autocomplete="off" required>
+    <button class="pbtn" type="submit">CONECTAR</button>
+    <span id="auth-error" role="alert"></span>
+  </form>
+  <input id="preset-file" type="file" accept=".json,application/json" hidden>
   <div class="presets">
     <span class="presets-label">PERFIL DE PREAMPS</span>
     <select id="preset-select" class="preset-select">
@@ -26,18 +36,18 @@
     <button id="preset-export" class="pbtn">EXPORTAR</button>
     <button id="preset-import" class="pbtn">IMPORTAR</button>
     <button id="preset-delete" class="pbtn danger">BORRAR</button>
-    <span id="preset-info" class="preset-info"></span>
+    <span id="preset-info" class="preset-info" role="status"></span>
   </div>
   <div class="mainvol">
     <span class="presets-label">MAIN OUT</span>
     <input id="main-volume" class="vol-range" type="range" min="0" max="100" step="1" value="0">
     <span id="main-volume-val" class="vol-val">0 / 100</span>
     <button id="store-standalone" class="pbtn">GUARDAR EN LA INTERFAZ</button>
-    <span class="vol-hint">escala de la pantalla del equipo (0 = −96 dB, 100 = 0 dB) · se manda en vivo al deslizar · «GUARDAR EN LA INTERFAZ» copia TODO el estado a la memoria interna del equipo (una sola vía, para uso standalone)</span>
+    <span class="vol-hint">escala de la pantalla del equipo (0 = silencio, 10 = −96 dB, 100 = 0 dB) · se manda en vivo al deslizar · «GUARDAR EN LA INTERFAZ» copia TODO el estado a la memoria interna del equipo (una sola vía, para uso standalone)</span>
   </div>
   <div id="rack" class="rack"></div>
   <footer id="device-name" class="dim">—</footer>
 </div>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

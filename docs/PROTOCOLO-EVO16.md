@@ -1,5 +1,9 @@
 # Protocolo del EVO 16 — referencia verificada
 
+Revisión vigente: **15–16 de octubre de 2026**. Esta evidencia prevalece sobre mayo y sobre cualquier
+comentario o prueba anterior que la contradiga. El contrato público de la API v2 usa dB reales
+(−8…50); el transporte sigue usando el byte 0…58, sin cambiar los registros USB.
+
 Todo lo de este documento está **verificado contra el hardware** (EVO 16, firmware 1.30, macOS, app
 oficial cerrada), salvo lo que diga «pendiente». Reemplaza a las tablas de la investigación EVO8
 original del README, cuyos supuestos equivocados se aclaran al final.
@@ -14,7 +18,8 @@ original del README, cuyos supuestos equivocados se aclaran al final.
   pasarle el **número de unidad** (`0x3A`), no el wIndex completo (`0x3A00`). Con el wIndex completo
   todo devuelve `GET_CUR failed` y parece un endpoint colgado: no lo es.
 - `wValue = (CS << 8) | canal` (canal 0-based: CH1 = 0 … CH24 = 23)
-- `wLength = 4` en los registros de preamp/volumen; `wLength = 2 × canales` en medidores.
+- `wLength = 4` en preamps; **2 bytes** en volumen del main; **1 byte** en selector de reloj;
+  `wLength = 2 × canales` en niveles de medidores y 1 byte por canal en clips.
 
 ## Mapa de entidades
 
@@ -46,11 +51,15 @@ Con el par linkeado el **firmware espeja** gain y DI: el cliente no debe duplica
 el link, el equipo **unifica el valor del par** (por eso los perfiles se aplican link → mute →
 phantom/gain/DI → unmute).
 
+El mute conserva la separación implementada y verificada: canales 1–8 en EU58 (`0x3A00`)
+y 9–24 en FU11 (`0x0B00`), CS=2, cuatro bytes. La corrección reciente de **link a CS=3**
+no implica cambiar la entidad del mute ADAT.
+
 ## Reloj — unidad `0x28` (ClockSelector)
 
 | CS | Datos | Valor |
 | -- | ----- | ----- |
-| 1  | `[v,0,0,0]` | **1 = Internal · 2 = Óptica 1 · 3 = Óptica 2** |
+| 1  | `[v]` (1 byte) | **1 = Internal · 2 = Óptica 1 · 3 = Óptica 2** |
 
 La clase de la app es `UacLib::UacClockSelector` (`setClockSource` / `getSelectedClockSource`).
 Cambiarlo a óptica sin nada conectado deja al equipo sin reloj.

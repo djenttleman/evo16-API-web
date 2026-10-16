@@ -64,7 +64,7 @@ static int open_device(uint16_t vid, uint16_t pid) {
 
     usb_service = IOIteratorNext(iter);
     IOObjectRelease(iter);
-    if (!usb_service) return -1;
+    if (!usb_service) return -2; /* no matching USB device */
 
     IOCFPlugInInterface **plugIn = NULL;
     SInt32 score;
@@ -82,7 +82,7 @@ static int open_device(uint16_t vid, uint16_t pid) {
         (*dev_iface)->Release(dev_iface);
         dev_iface = NULL;
         IOObjectRelease(usb_service);
-        return -1;
+        return kr == kIOReturnExclusiveAccess ? -3 : -1;
     }
     return 0;
 }
@@ -180,9 +180,11 @@ static int open_interrupt_interface(void) {
 static int do_interrupt_read(uint8_t *buf, uint16_t *len, int timeout_ms) {
     if (!intf_iface) return -1;
     /* Read from endpoint 0x82 (Interrupt IN, endpoint 2) */
-    kern_return_t kr = (*intf_iface)->ReadPipeTO(intf_iface, 0x82, buf, len,
+    UInt32 count = *len;
+    kern_return_t kr = (*intf_iface)->ReadPipeTO(intf_iface, 0x82, buf, &count,
                                                    timeout_ms, timeout_ms);
-    if (kr != KERN_SUCCESS) return -1;
+    if (kr != KERN_SUCCESS || count > UINT16_MAX) return -1;
+    *len = (uint16_t)count;
     return 0;
 }
 
@@ -277,7 +279,13 @@ int main(int argc, char **argv) {
     uint16_t vid = (uint16_t)strtoul(argv[1], NULL, 0);
     uint16_t pid = (uint16_t)strtoul(argv[2], NULL, 0);
 
-    if (open_device(vid, pid) != 0) { return 1; }
+    int opened = open_device(vid, pid);
+    if (opened != 0) {
+        printf("ERROR %s\n", opened == -2 ? "DEVICE_NOT_FOUND" :
+                              opened == -3 ? "USB_BUSY" : "OPEN_FAILED");
+        fflush(stdout);
+        return 1;
+    }
     printf("READY\n");
     fflush(stdout);
 
@@ -289,7 +297,6 @@ int main(int argc, char **argv) {
         if (n < 0) break;
         if (strcmp(line, "QUIT") == 0 || strcmp(line, "quit") == 0) break;
 
-        char cmd_type[32] = {0};
         json_get_int(line, "wValue", &(int){0});
         json_get_int(line, "wIndex", &(int){0});
         json_get_int(line, "length", &(int){0});

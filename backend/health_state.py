@@ -12,6 +12,7 @@ estado lo da el launcher del puerto 3100, que sí vive fuera del servicio.
 STATE_HELP: dict[str, str] = {
     "connected":          "el equipo responde",
     "usb_busy":           "la app oficial EVO Control tiene el USB: cerrala y hacé POST /api/reconnect",
+    "device_disconnected": "EVO 16 no conectada: revisá el cable USB y la alimentación",
     "helper_down":        "el helper USB no está corriendo: POST /api/reconnect lo vuelve a levantar",
     "device_unreachable": "el helper vive pero el equipo no contesta (¿cable? ¿encendido?)",
     "reconnecting":       "reconectando con el equipo",
@@ -37,10 +38,14 @@ def state_from(device: dict, app_running: bool) -> str:
         return "connected"
     if "helper" not in device:
         return "not_ready"
-    if not device.get("helper"):
-        return "helper_down"
+    if device.get("reason") == "device_not_found":
+        return "device_disconnected"
+    if device.get("reason") == "usb_busy":
+        return "usb_busy"
     if app_running:
         return "usb_busy"
+    if not device.get("helper"):
+        return "helper_down"
     return "device_unreachable"
 
 

@@ -1,672 +1,331 @@
-"""EVO 16 Web API — FastAPI server for remote preamp control."""
-
-import sys
-import os
-import time
+"""EVO 16 Remote API v2. Protocol authority: docs/PROTOCOLO-EVO16.md, Oct 2026."""
 import asyncio
-import tempfile
-import webbrowser
-import subprocess
+import fcntl
+import json
+import os
+import signal
+import sys
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 import uvicorn
 
+from backend.config import DATA_DIR, VERSION, PROTOCOL_REVISION, api_token
+from backend.runtime import DeviceRuntime, Unavailable
+from backend.security import AccessControl, COOKIE
+from backend import presets
 from backend.service import Evo16Service
-from backend.presets import (
-    PRESETS_DIR,
-    PresetError,
-    delete as delete_preset,
-    export_preset,
-    import_preset,
-    list_presets,
-    load as load_preset,
-    save as save_preset,
-)
 
-app = FastAPI(title="EVO 16 Remote", version="1.0.0")
+TEST_MODE = bool(os.environ.get("EVO16_HELPER_PATH"))
+STARTED_AT = time.monotonic()
+SERVER_PORT = int(os.environ.get("EVO16_PORT", "3000"))
+WEB_DIR = Path(sys._MEIPASS) / "web" if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent / "web"
 
 
-PID_FILE = Path(tempfile.gettempdir()) / "evo16-remote.pid"
-SERVER_PORT = 3000
+@asynccontextmanager
+async def lifespan(app):
+    app.state.token = api_token()
+    app.state.runtime = DeviceRuntime()
+    app.state.runtime.start()
+    yield
+    await asyncio.to_thread(app.state.runtime.close)
 
 
-def _cmdline(pid: int) -> str:
-    """Línea de comandos de un pid (para no matar un proceso ajeno si el pid se recicló)."""
-    try:
-        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
-                           capture_output=True, text=True, timeout=5)
-        return r.stdout.strip()
-    except Exception:
-        return ""
+app = FastAPI(title="EVO 16 Remote", version=VERSION, lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(AccessControl)
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+@app.exception_handler(Unavailable)
+async def unavailable(request, exc):
+    return JSONResponse({"detail": str(exc), "code": "device_unavailable"}, 503,
+                        headers={"Retry-After": "2"})
 
 
-def _kill_pid(pid: int, why: str, require: str | None = None) -> bool:
-    """Cierra un proceso: SIGTERM y, si no muere en ~3 s, SIGKILL.
-
-    Cerrar limpio importa: el server libera el USB (helper mac-evo16) recién en su shutdown, así
-    que un SIGKILL seco deja el dispositivo tomado y la instancia nueva no puede arrancar.
-    `require`: si se pasa, sólo mata si esa cadena aparece en la línea de comandos del pid
-    (evita matar un proceso cualquiera por un pid reciclado).
-    """
-    import signal
-    import time
-
-    if pid <= 0 or pid == os.getpid() or not _pid_alive(pid):
-        return False
-    if require and require not in _cmdline(pid):
-        return False
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except Exception:
-        return False
-    for _ in range(30):
-        time.sleep(0.1)
-        if not _pid_alive(pid):
-            print(f"🧹 {why} (pid {pid}) cerrada limpiamente")
-            return True
-    try:
-        os.kill(pid, signal.SIGKILL)
-        print(f"🧹 {why} (pid {pid}) no respondió a SIGTERM: SIGKILL")
-    except Exception:
-        pass
-    return True
+@app.exception_handler(presets.PresetError)
+async def invalid_preset(request, exc):
+    return JSONResponse({"detail": str(exc), "code": "invalid_preset"}, 400)
 
 
-def _cleanup_conflicts() -> None:
-    """Deja SIEMPRE una sola instancia: mata las viejas antes de tomar el puerto.
-
-    Cuatro frentes, en orden:
-      1. el pid anotado en /tmp/evo16-remote.pid (la instancia anterior),
-      2. cualquier proceso escuchando en el puerto del server,
-      3. helpers mac-evo16 huérfanos (si el server murió mal, quedan con el USB tomado y hacen
-         fallar el arranque),
-      4. aviso si la app oficial EVO Control tiene el equipo (esa NO se mata: es del usuario).
-    """
-    import signal
-
-    # 1. la instancia anterior, si dejó su pid
-    try:
-        if PID_FILE.is_file():
-            prev = int((PID_FILE.read_text().strip() or "0"))
-            _kill_pid(prev, "instancia anterior de evo16-remote", require="main.py")
-    except Exception:
-        pass
-
-    # 2. quien tenga el puerto (sea o no nuestro)
-    try:
-        r = subprocess.run(["lsof", "-ti", f":{SERVER_PORT}"],
-                           capture_output=True, text=True, timeout=5)
-        for pid in r.stdout.split():
-            _kill_pid(int(pid), f"proceso ocupando el puerto {SERVER_PORT}")
-    except Exception:
-        pass
-
-    # 3. helpers mac-evo16 sueltos
-    try:
-        r = subprocess.run(["pgrep", "-f", "mac-evo16"],
-                           capture_output=True, text=True, timeout=5)
-        for pid in r.stdout.split():
-            _kill_pid(int(pid), "helper mac-evo16 huérfano")
-        # resto que no haya respondido a SIGTERM
-        subprocess.run(["pkill", "-9", "-f", "mac-evo16"], timeout=5)
-    except Exception:
-        pass
-
-    # 4. la app oficial: avisar, nunca matar
-    try:
-        r = subprocess.run(["pgrep", "-f", "EVO.app/Contents/MacOS/EVO"],
-                           capture_output=True, text=True, timeout=5)
-        if r.stdout.strip():
-            print("⚠️  EVO Control está ABIERTA: es la dueña del USB. Cerrála para controlar el "
-                  "hardware (el server arranca igual, pero los controles van a fallar).")
-    except Exception:
-        pass
-
-    # Anotamos nuestro pid para que la próxima instancia nos encuentre
-    try:
-        PID_FILE.write_text(str(os.getpid()))
-    except Exception:
-        pass
-
-# CORS for tablet access from LAN
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Device service
-service: Evo16Service | None = None
+def runtime(request: Request) -> DeviceRuntime:
+    return request.app.state.runtime
 
 
-def _vigilante_de_la_app() -> None:
-    """Si la app de barra de menú escribió su marca (`app.pid`) y ese proceso ya no está, este
-    servicio se apaga: es el pedido de David — «el servicio funciona solo con la app abierta».
-
-    Así funciona incluso si la app murió de golpe (kill, crash), porque el marcador queda con un PID
-    muerto. Si NO hay marcador, el servicio es independiente (lo arrancó la Terminal o el wrapper) y
-    no se apaga solo.
-    """
-    import time as _t
-    marca = Path.home() / "Library" / "Application Support" / "EVO16Remote" / "app.pid"
-    while True:
-        _t.sleep(3)
-        try:
-            if not marca.exists():
-                continue
-            pid = int((marca.read_text().strip() or "0"))
-            if pid <= 0:
-                continue
-            os.kill(pid, 0)                       # sólo pregunta si vive: no le manda señal
-        except ProcessLookupError:
-            print("👋 la app cerró: el servicio se apaga con ella (pedido de David)")
-            try:
-                if service is not None:
-                    service.disconnect()          # libera el USB antes de irse
-            except Exception:
-                pass
-            os._exit(0)
-        except Exception:                         # noqa: BLE001  (marca ilegible: no es asunto mío)
-            continue
+class StrictBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-# Models
-class GainRequest(BaseModel):
-    db: int
-
-class MuteRequest(BaseModel):
-    muted: bool
-
-class PhantomRequest(BaseModel):
-    on: bool
+class GainRequest(StrictBody):
+    db: int = Field(ge=-8, le=50, strict=True)
 
 
-@app.on_event("startup")
-async def startup():
-    global service
-    try:
-        service = Evo16Service()
-        service.connect()
-        print("✅ EVO 16 connected")
-    except Exception as e:
-        print(f"⚠️  EVO 16 not available: {e}")
-        print("   Is the EVO 16 connected via USB?")
-        print("   Is the official EVO Control app closed?")
-        print("   Web UI will show demo/simulated mode")
-        service = None
-    import threading
-    threading.Thread(target=_vigilante_de_la_app, daemon=True).start()
-    webbrowser.open("http://localhost:3000")
+class VolumeRequest(StrictBody):
+    db: float = Field(ge=-128, le=0, strict=True)
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    if service:
-        service.disconnect()
+class ToggleRequest(StrictBody):
+    on: bool = Field(strict=True)
 
 
-# === REST API ===
+class MuteRequest(StrictBody):
+    muted: bool = Field(strict=True)
+
+
+class ClockRequest(StrictBody):
+    source: StrictInt | str
+
+
+class PresetImportRequest(StrictBody):
+    preset: dict
+    name: str | None = None
+
+
+def channel_ok(channel, di=False):
+    if not 1 <= channel <= 24:
+        raise HTTPException(400, "El canal debe estar entre 1 y 24")
+    if di and channel not in Evo16Service.INSTR_CHANNELS:
+        raise HTTPException(400, "DI disponible en canales 1, 2, 9, 10, 17 y 18")
+
+
+@app.get("/api/health")
+def health(request: Request):
+    return {"service": "ok", "version": VERSION, "protocolRevision": PROTOCOL_REVISION, "testMode": TEST_MODE,
+            "uptimeSeconds": round(time.monotonic() - STARTED_AT, 1),
+            "urls": {"loopback": f"http://127.0.0.1:{SERVER_PORT}"},
+            **runtime(request).health()}
+
 
 @app.get("/api/status")
-async def get_status():
-    """Get full device status (gains, phantom, mutes)."""
-    if service and service._connected:
-        try:
-            return service.get_all_status()
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, 503)
-    # Mock response for when device is not connected
-    inputs = []
-    for i in range(1, 25):
-        a = i if i % 2 == 1 else i - 1
-        inputs.append({
-            "channel": i, "gain": 0.0, "mute": False, "phantom": False,
-            "instrument": False, "linked": False, "linkPair": [a, a + 1],
-        })
-    return {
-        "device": "Audient EVO 16 (DEMO MODE)",
-        "inputs": inputs,
-        "outputs": [
-            {"pair": 1, "mute": False, "label": "Main"},
-            {"pair": 2, "mute": False, "label": "Line 3-4"},
-            {"pair": 3, "mute": False, "label": "Line 5-6"},
-            {"pair": 4, "mute": False, "label": "Line 7-8"},
-            {"pair": 5, "mute": False, "label": "Phones"},
-        ],
-    }
+def status(request: Request):
+    return {**runtime(request).status(), "testMode": TEST_MODE}
+
+
+@app.post("/api/reconnect")
+def reconnect(request: Request):
+    return {"service": "ok", **runtime(request).reconnect()}
+
+
+@app.get("/api/gain/{channel}")
+def get_gain(channel: int, request: Request):
+    channel_ok(channel)
+    return {"channel": channel, "gain": runtime(request).call("get_gain", channel), "status": "ok"}
 
 
 @app.post("/api/gain/{channel}")
-async def set_gain(channel: int, req: GainRequest):
-    """Set preamp gain for a channel (1-24, dB 0 to 50)."""
-    if channel < 1 or channel > 24:
-        raise HTTPException(400, "Channel must be 1-24")
-    if not service or not service._connected:
-        # Mock — just return success
-        return {"channel": channel, "gain": req.db, "status": "mock"}
-    actual = service.set_gain(channel, req.db)
-    return {"channel": channel, "gain": actual, "status": "ok"}
+def set_gain(channel: int, req: GainRequest, request: Request):
+    channel_ok(channel)
+    return {"channel": channel, "gain": runtime(request).call("set_gain", channel, req.db, write=True), "status": "ok"}
+
+
+@app.get("/api/phantom/{channel}")
+def get_phantom(channel: int, request: Request):
+    channel_ok(channel)
+    return {"channel": channel, "phantom": runtime(request).call("get_phantom", channel), "status": "ok"}
 
 
 @app.post("/api/phantom/{channel}")
-async def set_phantom(channel: int, req: PhantomRequest):
-    """Toggle 48V phantom power for channel (1-24)."""
-    if channel < 1 or channel > 24:
-        raise HTTPException(400, "Channel must be 1-24")
-    if not service or not service._connected:
-        return {"channel": channel, "phantom": req.on, "status": "mock"}
-    service.set_phantom(channel, req.on)
+def set_phantom(channel: int, req: ToggleRequest, request: Request):
+    channel_ok(channel)
+    runtime(request).call("set_phantom", channel, req.on, write=True)
     return {"channel": channel, "phantom": req.on, "status": "ok"}
 
 
+@app.get("/api/mute/{channel}")
+def get_mute(channel: int, request: Request):
+    channel_ok(channel)
+    return {"channel": channel, "muted": runtime(request).call("get_mute", channel), "status": "ok"}
+
+
 @app.post("/api/mute/{channel}")
-async def set_mute(channel: int, req: MuteRequest):
-    """Mute/unmute an input channel (1-24)."""
-    if channel < 1 or channel > 24:
-        raise HTTPException(400, "Channel must be 1-24")
-    if not service or not service._connected:
-        return {"channel": channel, "muted": req.muted, "status": "mock"}
-    service.set_mute(channel, req.muted)
+def set_mute(channel: int, req: MuteRequest, request: Request):
+    channel_ok(channel)
+    runtime(request).call("set_mute", channel, req.muted, write=True)
     return {"channel": channel, "muted": req.muted, "status": "ok"}
 
 
-# === EXPERIMENTAL API ===
-
-class InstrRequest(BaseModel):
-    on: bool
-
-# Canales con hardware de instrumento/DI: locales 1-2 + ADAT 9-10 (ADAT1) y 17-18 (ADAT2).
-# Debe coincidir con Evo16Service.INSTR_CHANNELS.
-INSTRUMENT_CHANNELS = (1, 2, 9, 10, 17, 18)
-
 @app.get("/api/instrument/{channel}")
-async def get_instrument(channel: int):
-    """Get instrument mode. Canales con hardware de DI: 1-2 (locales), 9-10 y 17-18 (ADAT)."""
-    if channel not in INSTRUMENT_CHANNELS:
-        raise HTTPException(400, f"Instrument mode only available on channels {INSTRUMENT_CHANNELS}")
-    if not service or not service._connected:
-        return {"channel": channel, "instrument": None, "status": "mock"}
-    result = service.get_instrument(channel)
-    return {"channel": channel, "instrument": result, "status": "ok"}
+def get_instrument(channel: int, request: Request):
+    channel_ok(channel, di=True)
+    return {"channel": channel, "instrument": runtime(request).call("get_instrument", channel), "status": "ok"}
+
 
 @app.post("/api/instrument/{channel}")
-async def set_instrument(channel: int, req: InstrRequest):
-    """Set instrument/DI mode. Ver service.py: CS=4 con read-modify-write del bit 1."""
-    if channel not in INSTRUMENT_CHANNELS:
-        raise HTTPException(400, f"Instrument mode only available on channels {INSTRUMENT_CHANNELS}")
-    if not service or not service._connected:
-        return {"channel": channel, "instrument": req.on, "status": "mock"}
-    service.set_instrument(channel, req.on)
+def set_instrument(channel: int, req: ToggleRequest, request: Request):
+    channel_ok(channel, di=True)
+    runtime(request).call("set_instrument", channel, req.on, write=True)
     return {"channel": channel, "instrument": req.on, "status": "ok"}
 
 
-class LinkRequest(BaseModel):
-    on: bool
-
-class VolumeRequest(BaseModel):
-    db: float
-
-# ── Salud / info / reconexión: pensados para que los consuma un agente (ver docs/AGENT-API.md) ──
-from health_state import state_for          # estado de alto nivel (ver backend/health_state.py)
-
-APP_VERSION = "1.1.1"
-STARTED_AT = time.time()
-
-def _app_running() -> bool:
-    """¿Está abierta la app oficial? Es la dueña del USB, así que si lo está el control falla."""
-    try:
-        r = subprocess.run(["pgrep", "-f", "EVO.app/Contents/MacOS/EVO"],
-                           capture_output=True, text=True, timeout=5)
-        return bool(r.stdout.strip())
-    except Exception:
-        return False
-
-def _urls() -> dict:
-    """URLs donde escucha este server (la UI y la API viven en el mismo puerto)."""
-    import socket
-    hosts = {"loopback": f"http://127.0.0.1:{SERVER_PORT}"}
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))            # no manda nada: sólo resuelve la IP de salida
-        hosts["lan"] = f"http://{s.getsockname()[0]}:{SERVER_PORT}"
-        s.close()
-    except Exception:
-        pass
-    return hosts
-
-@app.get("/api/health")
-async def health():
-    """Estado EN VIVO del servicio y del equipo, en un solo llamado.
-
-    Para clientes de terceros trae además un **estado de alto nivel** que no hay que interpretar:
-    `state` (ver backend/health_state.py), `ok`, `stateDetail` y `stateSeconds` (desde cuándo está
-    así, para no parpadear). El resto es la verdad cruda: si el helper responde, si el EQUIPO
-    contesta de verdad (lectura real), si la app oficial tiene el USB, las URLs y la antigüedad.
-    """
-    dev: dict = {"connected": False, "error": "servicio sin inicializar"}
-    if service is not None:
-        try:
-            dev = service.health()
-        except Exception as e:                     # noqa: BLE001
-            dev = {"connected": False, "error": str(e)}
-    app_running = _app_running()
-    return {
-        "service": "ok",
-        "version": APP_VERSION,
-        "uptimeSeconds": round(time.time() - STARTED_AT, 1),
-        "urls": _urls(),
-        "audientAppRunning": app_running,
-        "device": dev,
-        **state_for(dev, app_running),             # state / ok / stateDetail / stateSeconds
-    }
-
-@app.post("/api/reconnect")
-async def reconnect():
-    """Reabre el dispositivo. Llamar después de cerrar la app oficial (ella tiene el USB)."""
-    if service is None:
-        raise HTTPException(503, "servicio sin inicializar")
-    return {"service": "ok", "device": service.reconnect()}
-
-@app.post("/api/store-standalone")
-async def store_standalone():
-    """Guarda el estado actual en la MEMORIA INTERNA de la interfaz ("Store Standalone State").
-
-    Sirve para que el equipo trabaje solo, sin computadora. Es de una sola vía: pisa lo que haya
-    guardado. Para verificarlo hay que ciclar la energía del equipo y comprobar que vuelve con
-    este estado.
-    """
-    if not service or not service._connected:
-        raise HTTPException(503, "EVO 16 no conectada")
-    try:
-        return {"service": "ok", **service.store_standalone()}
-    except Exception as e:                         # noqa: BLE001
-        raise HTTPException(500, str(e))
-
-@app.post("/api/service/stop")
-async def service_stop():
-    """Detiene ESTE servicio (libera el USB para la app oficial).
-
-    Responde primero y recién después baja, así el cliente recibe el 200. Para volver a
-    levantarlo: `POST http://127.0.0.1:3100/api/start` (launcher) o `evo16-remote start`.
-    """
-    async def _morir() -> None:
-        await asyncio.sleep(0.6)                    # que salga la respuesta HTTP
-        try:
-            if service is not None:
-                service.disconnect()                # libera el helper (y con él el USB)
-        except Exception:                           # noqa: BLE001
-            pass
-        os._exit(0)
-
-    asyncio.create_task(_morir())
-    return {"status": "stopping", "restart": "POST http://127.0.0.1:3100/api/start"}
-
-@app.get("/api/clock")
-async def get_clock():
-    """Fuente de reloj actual del equipo (internal / optical1 / optical2)."""
-    if not service or not service._connected:
-        return {"status": "mock"}
-    return {"status": "ok", **service.get_clock_source()}
-
-class ClockRequest(BaseModel):
-    source: int | str            # 1|2|3 o "internal"|"optical1"|"optical2"
-
-@app.post("/api/clock")
-async def set_clock(req: ClockRequest):
-    """Cambia la fuente de reloj (ClockSelector 0x28 CS=1)."""
-    if not service or not service._connected:
-        raise HTTPException(503, "EVO 16 no conectada")
-    val = req.source
-    if isinstance(val, str):
-        inv = {v: k for k, v in service.CLOCK_NAMES.items()}
-        if val.strip().lower() not in inv:
-            raise HTTPException(400, "Fuente inválida: internal, optical1 u optical2.")
-        val = inv[val.strip().lower()]
-    try:
-        return {"status": "ok", **service.set_clock_source(int(val))}
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:                             # noqa: BLE001
-        raise HTTPException(500, str(e))
-
-@app.get("/api/meters")
-async def meters():
-    """Niveles en dB de los 24 canales de entrada y de las salidas (más el clip).
-
-    Pensado para **medidores en tiempo real**: una llamada son 4 transferencias USB (bloques
-    GET_MEM de la unidad 0x3C), así que se puede consultar varias veces por segundo sin castigar
-    al equipo. `-120.0` significa silencio.
-    """
-    if not service or not service._connected:
-        return {"status": "mock", "inputs": [], "outputs": []}
-    try:
-        return {"status": "ok", **service.get_meters()}
-    except Exception as e:                             # noqa: BLE001
-        raise HTTPException(500, str(e))
-
-@app.get("/api/info")
-async def info():
-    """Qué sabe hacer esta API — pensado para que lo lea un agente antes de usarla.
-
-    Cada capacidad lista el método y la ruta. El detalle (protocolo, escalas, pares de link,
-    orden de aplicación de perfiles) está en docs/AGENT-API.md y en /docs (OpenAPI).
-    """
-    return {
-        "name": "EVO 16 Remote",
-        "version": APP_VERSION,
-        "device": "Audient EVO 16 (USB Audio Class 2, firmware 1.30)",
-        "urls": _urls(),
-        "openapi": "/docs",
-        "guide": "docs/AGENT-API.md",
-        "requirement": "la app oficial EVO Control debe estar CERRADA (es la dueña del USB)",
-        "capabilities": {
-            "estado": ["GET /api/status (los 24 canales + mainVolume)",
-                       "GET /api/health (conexión en vivo)",
-                       "POST /api/reconnect"],
-            "preamps": ["GET|POST /api/gain/{ch} {db}",
-                        "GET|POST /api/phantom/{ch} {on}",
-                        "GET|POST /api/mute/{ch} {muted}",
-                        "GET|POST /api/instrument/{ch} {on}   (DI; canales 1,2,9,10,17,18)"],
-            "link": ["GET|POST /api/link/{ch} {on}   (pares (impar, impar+1); el firmware espeja gain y DI)"],
-            "volumenMain": ["GET|POST /api/main-volume {db}   (dB; escala de pantalla 0-100 = -96..0 dB)"],
-            "standalone": ["POST /api/store-standalone   (guarda el estado en la memoria INTERNA de "
-                           "la interfaz; una sola vía; verificar ciclando la energía)"],
-            "medidores": ["GET /api/meters   (niveles en dB de los 24 canales y de las salidas + "
-                          "clip; 4 transferencias por llamada: sirve para tiempo real)"],
-            "clock": ["GET|POST /api/clock {source}   (1/internal, 2/optical1, 3/optical2)"],
-            "cicloDeVida": ["POST /api/service/stop   (apaga ESTE servicio liberando el USB)",
-                            "para ENCENDERLO: POST http://127.0.0.1:3100/api/start (launcher) — "
-                            "el servicio no puede arrancarse a sí mismo; ver docs/AGENT-API.md"],
-            "perfiles": ["GET /api/presets", "GET /api/presets/{nombre}",
-                         "POST /api/presets/{nombre} (guarda el estado ACTUAL)",
-                         "POST /api/presets/{nombre}/apply", "POST /api/presets/{nombre}/export",
-                         "POST /api/presets/import", "DELETE /api/presets/{nombre}"],
-        },
-        "channelRange": "1-24",
-    }
-
-# Volumen del MAIN MIX (ver service.py → MAIN_VOL_CS). Lo descubrió el desensamblado de
-# UacXUAudientMonitorController::setMainVolume y lo confirmó la perilla física del equipo.
-# Es un control que la app oficial NO expone: sólo se podía tocar con la perilla.
-@app.get("/api/main-volume")
-async def get_main_volume():
-    """Volumen del main mix en dB."""
-    if not service or not service._connected:
-        return {"mainVolume": None, "status": "mock"}
-    return {"mainVolume": service.get_main_volume(), "status": "ok"}
-
-@app.post("/api/main-volume")
-async def set_main_volume(req: VolumeRequest):
-    """Fija el volumen del main mix (dB, Q8.8 con signo)."""
-    if not service or not service._connected:
-        return {"mainVolume": req.db, "status": "mock"}
-    written = service.set_main_volume(req.db)
-    return {"mainVolume": written, "status": "ok"}
-
-# Link de par estéreo (ver service.py → LINK_CS; es CS=3 del EVO 16). El par de un canal es
-# (impar, impar+1): 1-2, 3-4, 5-6, … Con el par linkeado el FIRMWARE espeja el preamp (gain, DI),
-# así que el cliente NO necesita duplicar escrituras: le basta linkear y escribir en un lado.
 @app.get("/api/link/{channel}")
-async def get_link(channel: int):
-    """Estado de link del par al que pertenece el canal (1..24)."""
-    if not (1 <= channel <= 24):
-        raise HTTPException(400, "Channel out of range (1-24)")
-    pair = service.link_pair(channel) if service else (channel, channel)
-    if not service or not service._connected:
-        return {"channel": channel, "linked": False, "pair": list(pair), "status": "mock"}
-    return {"channel": channel, "linked": service.get_link(channel), "pair": list(pair), "status": "ok"}
+def get_link(channel: int, request: Request):
+    channel_ok(channel)
+    return {"channel": channel, "linked": runtime(request).call("get_link", channel),
+            "pair": list(Evo16Service.link_pair(channel)), "status": "ok"}
+
 
 @app.post("/api/link/{channel}")
-async def set_link(channel: int, req: LinkRequest):
-    """Linkea/deslinkea el par del canal (escribe CS3 en ambos canales del par)."""
-    if not (1 <= channel <= 24):
-        raise HTTPException(400, "Channel out of range (1-24)")
-    if not service or not service._connected:
-        return {"channel": channel, "linked": req.on, "status": "mock"}
-    pair = service.set_link(channel, req.on)
+def set_link(channel: int, req: ToggleRequest, request: Request):
+    channel_ok(channel)
+    pair = runtime(request).call("set_link", channel, req.on, write=True)
     return {"channel": channel, "linked": req.on, "pair": list(pair), "status": "ok"}
 
 
-# === Perfiles de preamps (un archivo JSON por perfil; ver backend/presets.py) ===
+@app.get("/api/main-volume")
+def get_main_volume(request: Request):
+    return {"mainVolume": runtime(request).call("get_main_volume"), "status": "ok"}
+
+
+@app.post("/api/main-volume")
+def set_main_volume(req: VolumeRequest, request: Request):
+    return {"mainVolume": runtime(request).call("set_main_volume", req.db, write=True), "status": "ok"}
+
+
+@app.get("/api/meters")
+def meters(request: Request):
+    return runtime(request).meter_values()
+
+
+@app.get("/api/clock")
+def get_clock(request: Request):
+    return {"status": "ok", **runtime(request).call("get_clock_source")}
+
+
+@app.post("/api/clock")
+def set_clock(req: ClockRequest, request: Request):
+    source = req.source
+    if isinstance(source, str):
+        source = {v: k for k, v in Evo16Service.CLOCK_NAMES.items()}.get(source.strip().lower())
+    if type(source) is not int or source not in Evo16Service.CLOCK_NAMES:
+        raise HTTPException(400, "Fuente inválida: internal, optical1 u optical2")
+    return {"status": "ok", **runtime(request).call("set_clock_source", source, write=True)}
+
+
+@app.post("/api/store-standalone")
+def standalone(request: Request):
+    return {"status": "ok", **runtime(request).call("store_standalone", write=True)}
+
 
 @app.get("/api/presets")
-async def get_presets():
-    """Perfiles guardados + la carpeta donde viven los archivos."""
-    return {"dir": str(PRESETS_DIR), "presets": list_presets()}
+def list_presets():
+    return {"presets": presets.list_presets()}
 
-class PresetPathRequest(BaseModel):
-    path: str                 # admite ~ ; el destino debe terminar en .json
-    overwrite: bool = False   # exportar nunca pisa un archivo existente sin esto
 
-class PresetImportRequest(BaseModel):
-    path: str
-    name: str | None = None   # opcional: con qué nombre entra al banco local
-
-# OJO con el orden: esta ruta va ANTES de /api/presets/{name}, si no "import" se toma como nombre.
 @app.post("/api/presets/import")
-async def import_preset_endpoint(req: PresetImportRequest):
-    """Trae al banco local un perfil desde un archivo de cualquier ubicación."""
-    try:
-        data = import_preset(req.path, req.name)
-    except PresetError as e:
-        raise HTTPException(400, str(e))
-    return {"status": "ok", "name": data["name"], "channels": len(data["channels"]),
-            "from": str(req.path)}
+def import_preset(req: PresetImportRequest):
+    data = presets.import_data(req.preset, req.name)
+    return {"status": "ok", "name": data["name"], "channels": len(data["channels"])}
+
 
 @app.get("/api/presets/{name}")
-async def get_preset(name: str):
-    """Contenido completo de un perfil (para inspeccionarlo o editarlo a mano)."""
-    try:
-        return load_preset(name)
-    except PresetError as e:
-        raise HTTPException(400, str(e))
+def get_preset(name: str):
+    return presets.load(name)
+
 
 @app.post("/api/presets/{name}/export")
-async def export_preset_endpoint(name: str, req: PresetPathRequest):
-    """Copia el perfil a la ubicación indicada, por ejemplo ~/Documents/sala-chica.json."""
-    try:
-        dst = export_preset(name, req.path, req.overwrite)
-    except PresetError as e:
-        raise HTTPException(400, str(e))
-    return {"status": "ok", "name": name, "file": str(dst), "bytes": dst.stat().st_size}
+def export_preset(name: str):
+    # Return content; the client chooses the destination on its own computer.
+    data = presets.load(name)
+    return JSONResponse(data, headers={"Content-Disposition": "attachment; filename=preset.json"})
+
 
 @app.post("/api/presets/{name}")
-async def save_preset_endpoint(name: str):
-    """Guarda el estado ACTUAL del equipo como perfil «name» (sobrescribe si existe)."""
-    if not service or not service._connected:
-        raise HTTPException(503, "EVO 16 no conectada")
-    try:
-        channels = service.capture_state()
-        data = save_preset(name, channels, device="Audient EVO 16")
-    except PresetError as e:
-        raise HTTPException(400, str(e))
-    return {"status": "ok", "name": data["name"], "savedAt": data["savedAt"],
-            "channels": len(channels), "file": str(PRESETS_DIR / (name.strip() + ".json"))}
+def save_preset(name: str, request: Request):
+    data = presets.save(name, runtime(request).call("capture_state"))
+    return {"status": "ok", "name": data["name"], "savedAt": data["savedAt"], "channels": len(data["channels"])}
+
 
 @app.post("/api/presets/{name}/apply")
-async def apply_preset(name: str):
-    """Inyecta el perfil en el equipo (gain, 48V, DI, link de par y mute de los 24 canales)."""
-    if not service or not service._connected:
-        raise HTTPException(503, "EVO 16 no conectada")
-    try:
-        data = load_preset(name)
-    except PresetError as e:
-        raise HTTPException(400, str(e))
-    result = service.apply_state(data["channels"])
-    return {
-        "status": "ok" if not result["errors"] else "partial",
-        "name": data.get("name", name),
-        "applied": len(result["applied"]),
-        "errors": result["errors"],
-    }
+def apply_preset(name: str, request: Request):
+    result = runtime(request).call("apply_state", presets.load(name)["channels"], write=True)
+    return {"status": "partial" if result["errors"] else "ok", "name": name,
+            "applied": len(result["applied"]), "errors": result["errors"]}
+
 
 @app.delete("/api/presets/{name}")
-async def delete_preset_endpoint(name: str):
-    """Borra el archivo del perfil."""
-    try:
-        delete_preset(name)
-    except PresetError as e:
-        raise HTTPException(400, str(e))
+def delete_preset(name: str):
+    presets.delete(name)
     return {"status": "ok", "name": name}
 
 
-# === Serve frontend ===
+@app.get("/api/openapi.json", include_in_schema=False)
+def openapi():
+    schema = app.openapi()
+    schema.setdefault("components", {})["securitySchemes"] = {
+        "BearerAuth": {"type": "http", "scheme": "bearer"}}
+    schema["security"] = [{"BearerAuth": []}]
+    return schema
 
-def _get_web_dir() -> Path:
-    if getattr(sys, 'frozen', False):
-        return Path(sys._MEIPASS) / "web"
-    return Path(__file__).parent.parent / "web"
 
-WEB_DIR = _get_web_dir()
+@app.get("/api/info")
+def info():
+    return {"name": "EVO 16 Remote", "version": VERSION, "protocolRevision": PROTOCOL_REVISION, "testMode": TEST_MODE,
+            "openapi": "/api/openapi.json", "authentication": "Bearer",
+            "gain": {"minDb": -8, "maxDb": 50, "wireOffset": 8},
+            "mainVolume": {"minDb": -128, "maxDb": 0, "display": "100 * 10 ** (db / 96)"},
+            "instrumentChannels": list(Evo16Service.INSTR_CHANNELS),
+            "channelRange": [1, 24], "statusIntervalSeconds": 2,
+            "lifecycle": "EVO 16 Remote.app (URL scheme o API opcional :3100)",
+            "capabilities": sorted(p for p in app.openapi()["paths"] if p.startswith("/api/"))}
 
 
 @app.get("/")
-async def serve_index():
-    return FileResponse(WEB_DIR / "index.html")
+def index(request: Request):
+    response = FileResponse(WEB_DIR / "index.html")
+    # Only a local same-origin UI gets a session without copying the native integration token.
+    if request.client and request.client.host in {"127.0.0.1", "::1"}:
+        response.set_cookie(COOKIE, request.app.state.token, httponly=True, samesite="strict")
+    return response
 
 
-@app.get("/{filename:path}")
-async def serve_static(filename: str):
-    filepath = WEB_DIR / filename
-    if filepath.is_file():
-        return FileResponse(filepath)
-    raise HTTPException(404)
+# StaticFiles resolves paths and rejects traversal (including escaped segments and symlinks).
+app.mount("/", StaticFiles(directory=WEB_DIR), name="web")
 
 
-def _host_de_escucha() -> str:
-    """Dónde escucha el servicio: **solo loopback** salvo que la app lo exponga a la red.
-
-    La app escribe `exponerRed` en sus preferencias (menú: «Exponer la interfaz en la red»), porque
-    el caso normal es consumirla desde el mismo Mac (RLM, un ReaScript, curl). `EVO16_HOST` manda si
-    está definido (lo usa el agente de launchd).
-    """
-    import json as _json
+def listen_host():
     if os.environ.get("EVO16_HOST"):
         return os.environ["EVO16_HOST"]
-    ruta = Path.home() / "Library" / "Application Support" / "EVO16Remote" / "prefs.json"
     try:
-        return "0.0.0.0" if _json.loads(ruta.read_text()).get("exponerRed") else "127.0.0.1"
-    except Exception:                              # noqa: BLE001  (sin preferencias → lo seguro)
+        prefs = json.loads((DATA_DIR / "prefs.json").read_text())
+        return "0.0.0.0" if prefs.get("exponerRed") else "127.0.0.1"
+    except (OSError, ValueError):
         return "127.0.0.1"
 
+
 if __name__ == "__main__":
-    _cleanup_conflicts()
-    # host: 127.0.0.1 por defecto (la interfaz y la API son para consumo LOCAL desde este Mac);
-    # la app puede prender la exposición en red desde sus preferencias.
-    uvicorn.run(app, host=_host_de_escucha(), port=3000, log_level="info")
+    if "--self-check" in sys.argv:
+        from backend.service import PROTOCOL_VERSION
+        print(json.dumps({"version": VERSION, "protocolRevision": PROTOCOL_VERSION,
+                          "webIncluded": (WEB_DIR / "index.html").is_file(),
+                          "helperIncluded": Path(Evo16Service()._helper_path).is_file(),
+                          "routes": len(app.openapi()["paths"])}))
+        sys.exit(0)
+    api_token()  # Secure private directory before taking the instance lock.
+    lock = (DATA_DIR / "service.lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("Ya hay una instancia de EVO 16 Remote; no se detuvo ningún proceso")
+    server = uvicorn.Server(uvicorn.Config(app, host=listen_host(), port=SERVER_PORT, log_level="warning",
+                                         limit_concurrency=64, backlog=64, timeout_keep_alive=5))
+    # Bind first, before startup can claim the USB. A foreign port owner is never terminated.
+    sock = server.config.bind_socket()
+    parent_pid = os.environ.get("EVO16_PARENT_PID")
+    if parent_pid:
+        import threading
+        def watch_parent():
+            while not server.should_exit:
+                try:
+                    os.kill(int(parent_pid), 0)
+                except ProcessLookupError:
+                    server.should_exit = True
+                    return
+                time.sleep(1)
+        threading.Thread(target=watch_parent, daemon=True).start()
+    server.run(sockets=[sock])

@@ -1,16 +1,20 @@
 """EVO 16 device service — EU58-based (DISCOVERED protocol).
 
 VERIFIED PROTOCOLS (DO NOT MODIFY without updating tests):
-  All verified against hardware on 2026-05-31:
+  Latest authority: docs/PROTOCOLO-EVO16.md (2026-10-15/16).
+  Earlier observations apply only where not superseded:
   - EVO 16 (VID 0x2708, PID 0x000A)
   - Audient SP8 on ADAT 1 (CH9-16) and ADAT 2 (CH17-24)
   - Clock config: macOS 48 kHz, EVO 16 Internal, SP8 Digital/AUTO
-  - See README § Verified Setup for full configuration
+  - See docs/PROTOCOLO-EVO16.md; historical observations are archived in docs/history/
 """
 
 import subprocess
 import json
 import threading
+import os
+import select
+import time
 from pathlib import Path
 
 # ── VERIFIED PROTOCOL CONSTANTS ──────────────────────────
@@ -31,7 +35,7 @@ VERIFIED_GAIN_PAYLOAD_SIZE = 4       # bytes
 VERIFIED_GAIN_BYTE_OFFSET  = 1       # byte index for dB value (0=first)
 VERIFIED_GAIN_MIN_DB       = 0
 VERIFIED_GAIN_MAX_DB       = 58      # medido 2026-10-15: el firmware CLAMPEA en 58
-# El byte del cable es la ganancia física 0..58 (sin signo). La UI de EVO Control
+# El byte del cable es 0..58 (sin signo), NO el valor público en dB. EVO Control
 # muestra −8..+50 con referencia de 8 dB ⇒ byte = valor_UI + 8. Escribir >58 (incluido
 # 248/0xF8) NO pone el mínimo: el firmware lo lleva al MÁXIMO.
 VERIFIED_GAIN_ENTITY       = VERIFIED_EU58  # wIndex
@@ -57,7 +61,16 @@ VERIFIED_CHANNEL_MAX = 24
 VERIFIED_ADAT_THRESHOLD = 8   # channels > 8 are ADAT
 
 # ── PROTOCOL VERSION (bump when any verified value changes) ──
-PROTOCOL_VERSION = "1.0.0-verified-2026-05-31"
+PROTOCOL_VERSION = "evo16-2026-10-16"
+GAIN_MIN_DB = -8
+GAIN_MAX_DB = 50
+GAIN_OFFSET = 8
+
+
+class DeviceConnectionError(RuntimeError):
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
 
 
 class Evo16Service:
@@ -72,7 +85,8 @@ class Evo16Service:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._connected = False
-        self._helper_path = helper_path or self._find_helper()
+        self._helper_path = helper_path or os.environ.get("EVO16_HELPER_PATH") or self._find_helper()
+        self._deadline = float("inf")
 
     @property
     def protocol_version(self) -> str:
@@ -93,45 +107,83 @@ class Evo16Service:
                 return str(c.resolve())
         raise FileNotFoundError(f"mac-evo16 not found in {candidates}")
 
+    def _readline(self, timeout: float = 2.0) -> str:
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self._read_buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([self._proc.stdout], [], [], remaining)[0]:
+                raise TimeoutError("El helper USB no respondió a tiempo")
+            chunk = os.read(self._proc.stdout.fileno(), 4096)
+            if not chunk:
+                raise RuntimeError("El helper USB se cerró")
+            self._read_buffer += chunk
+            if len(self._read_buffer) > 65536:
+                raise RuntimeError("Respuesta del helper demasiado grande")
+        line, self._read_buffer = self._read_buffer.split(b"\n", 1)
+        return line.decode("utf-8")
+
     def connect(self) -> None:
         if self._connected:
             return
+        self._read_buffer = b""
         self._proc = subprocess.Popen(
             [self._helper_path, VERIFIED_DEVICE_VID, VERIFIED_DEVICE_PID],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
-        line = self._proc.stdout.readline().strip()
-        if line != "READY":
-            err = self._proc.stderr.read()
-            raise RuntimeError(f"Helper failed: {line}\n{err}")
-        self._connected = True
+        try:
+            greeting = self._readline(3)
+            if greeting == "ERROR DEVICE_NOT_FOUND":
+                raise DeviceConnectionError("device_not_found", "EVO 16 no está conectada por USB")
+            if greeting == "ERROR USB_BUSY":
+                raise DeviceConnectionError("usb_busy", "El USB está ocupado por otra aplicación")
+            if greeting != "READY":
+                raise DeviceConnectionError("open_failed", "No se pudo abrir EVO 16")
+            self._connected = True
+        except Exception:
+            self.disconnect()
+            raise
 
     def disconnect(self) -> None:
         with self._lock:
-            if self._proc:
-                try:
-                    self._proc.stdin.write("quit\n")
-                    self._proc.stdin.flush()
-                except Exception:
-                    pass
-                try:
-                    self._proc.wait(timeout=2)
-                except Exception:
-                    self._proc.kill()
-                self._proc = None
-            self._connected = False
+            self._close_helper()
+
+    def _close_helper(self) -> None:
+        proc, self._proc = self._proc, None
+        self._connected = False
+        if proc:
+            try:
+                proc.stdin.write(b"quit\n")
+                proc.stdin.flush()
+                proc.wait(timeout=0.5)
+            except Exception:
+                proc.kill()
+                proc.wait(timeout=1)
+            finally:
+                for pipe in (proc.stdin, proc.stdout):
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
 
     def _send(self, cmd: dict) -> dict:
         with self._lock:
-            if not self._proc:
-                raise RuntimeError("Not connected")
-            self._proc.stdin.write(json.dumps(cmd, separators=(',', ':')) + "\n")
-            self._proc.stdin.flush()
-            resp = self._proc.stdout.readline()
-            if not resp:
-                raise RuntimeError("Helper closed")
-            return json.loads(resp)
+            if not self._proc or not self._connected:
+                raise RuntimeError("Equipo no conectado")
+            try:
+                if time.monotonic() >= self._deadline:
+                    raise TimeoutError("La operación USB superó su plazo total")
+                self._proc.stdin.write((json.dumps(cmd, separators=(',', ':')) + "\n").encode())
+                self._proc.stdin.flush()
+                result = json.loads(self._readline(min(2.0, max(0.001, self._deadline - time.monotonic()))))
+            except Exception:
+                # A timed-out response cannot be consumed by the next command.
+                self._close_helper()
+                raise
+            if "error" in result:
+                # A complete USB-error response is different from a dead helper.
+                self._connected = False
+                raise RuntimeError(result["error"])
+            return result
 
     # ════════════════════════════════════════════════════════════
     #  VERIFIED METHODS — DO NOT MODIFY
@@ -140,12 +192,12 @@ class Evo16Service:
     #  Any change MUST pass the smoke tests in test_protocol_smoke.py
     # ════════════════════════════════════════════════════════════
 
-    # ── GAIN (0–50 dB, CH 1–24) ──────────────────────────
+    # ── GAIN (−8…50 dB, CH 1–24) ──────────────────────────
 
     def get_gain(self, channel: int) -> float:
         """Read input gain in dB. Verified on CH 1-24.
 
-        Protocol: EU58 CS=1, 4 bytes [0, dB, 0, 0]
+        Protocol: EU58 CS=1, 4 bytes [0, dB + 8, 0, 0]
         """
         wValue = (VERIFIED_GAIN_CS << 8) | (channel - 1)
         r = self._send({
@@ -155,16 +207,17 @@ class Evo16Service:
             "length": VERIFIED_GAIN_PAYLOAD_SIZE,
         })
         data = bytes(r["data"])
-        return float(data[VERIFIED_GAIN_BYTE_OFFSET])
+        return float(data[VERIFIED_GAIN_BYTE_OFFSET] - GAIN_OFFSET)
 
     def set_gain(self, channel: int, db: int) -> int:
         """Set input gain in dB. Verified on CH 1-24.
 
-        Protocol: EU58 CS=1, 4 bytes [0, dB, 0, 0]
+        Protocol: EU58 CS=1, 4 bytes [0, dB + 8, 0, 0]
         """
-        db = max(VERIFIED_GAIN_MIN_DB, min(VERIFIED_GAIN_MAX_DB, db))
+        if not GAIN_MIN_DB <= db <= GAIN_MAX_DB:
+            raise ValueError("Ganancia fuera de rango: -8…50 dB")
         wValue = (VERIFIED_GAIN_CS << 8) | (channel - 1)
-        data = [0, db, 0, 0]
+        data = [0, db + GAIN_OFFSET, 0, 0]
         r = self._send({
             "type": "set_cur",
             "wValue": wValue,
@@ -243,52 +296,19 @@ class Evo16Service:
 
     def get_all_status(self) -> dict:
         status = {"device": "Audient EVO 16", "inputs": [], "outputs": []}
-        # Volumen del main mix (0x36 CS=18): una sola lectura extra por poll.
-        try:
-            status["mainVolume"] = self.get_main_volume()
-        except Exception:
-            status["mainVolume"] = None
-        # El link es POR PAR y CS3 lo devuelve igual cualquiera de los dos canales, así que se
-        # lee una sola vez por par (en el maestro) y se comparte con el seguidor: el poll suma
-        # 12 lecturas en vez de 24. No bajar el intervalo del poll (ver nota del encabezado).
-        link_cache: dict[int, bool] = {}
+        status["mainVolume"] = self.get_main_volume()
+        link_cache = {}
         for ch in range(VERIFIED_CHANNEL_MIN, VERIFIED_CHANNEL_MAX + 1):
-            try:
-                gain = self.get_gain(ch)
-            except Exception:
-                gain = 0.0
-            try:
-                mute = self.get_mute(ch)
-            except Exception:
-                mute = False
-            try:
-                phantom = self.get_phantom(ch)
-            except Exception:
-                phantom = False
-            entry = {
-                "channel": ch, "gain": gain, "mute": mute, "phantom": phantom,
-            }
-            # Modo instrumento / DI: sólo los canales con hardware (ver INSTR_CHANNELS).
-            if ch in self.INSTR_CHANNELS:
-                try:
-                    entry["instrument"] = self.get_instrument(ch)
-                except Exception:
-                    entry["instrument"] = None
-            # Link del par estéreo (CS=3): estado del par al que pertenece el canal.
             a, b = self.link_pair(ch)
             if a not in link_cache:
-                try:
-                    link_cache[a] = self.get_link(a)
-                except Exception:
-                    link_cache[a] = False
-            entry["linked"] = link_cache[a]
-            entry["linkPair"] = [a, b]
-            status["inputs"].append(entry)
-        for pair in range(5):
-            status["outputs"].append({
-                "pair": pair + 1, "mute": False,
-                "label": ["Main", "Line 3-4", "Line 5-6", "Line 7-8", "Phones"][pair],
+                link_cache[a] = self.get_link(a)
+            status["inputs"].append({
+                "channel": ch, "gain": self.get_gain(ch),
+                "mute": self.get_mute(ch), "phantom": self.get_phantom(ch),
+                "instrument": self.get_instrument(ch),
+                "linked": link_cache[a], "linkPair": [a, b],
             })
+        # Output mute is not implemented; an empty list is preferable to invented values.
         return status
 
     # ════════════════════════════════════════════════════════════
@@ -297,10 +317,6 @@ class Evo16Service:
     #  Mark clearly: status, what it controls, what hardware tested.
     # ════════════════════════════════════════════════════════════
 
-    # ── INSTRUMENT MODE (CS=5, CH 1-2 only) ────────────
-    # Status: PROBED — writes confirmed with 8-byte payload, pending physical verification
-    # HW:     EVO 16 front TS jacks (CH1, CH2)
-    # Desc:   High-impedance DI mode for guitars/basses (XLR/TRS combo jack switching)
     # ── INSTRUMENTO / DI (EU58 CS=4) — VERIFICADO EN HARDWARE 2026-10-15 ──
     # Proto:  EU58 CS=4, 4 bytes. Es un BITMASK por canal: **bit 1 = instrumento/DI**.
     #         Se escribe SIEMPRE el word completo (leer → modificar el bit → escribir),
@@ -436,6 +452,8 @@ class Evo16Service:
 
     def set_main_volume(self, db: float) -> float:
         """Fija el volumen del main mix. Devuelve el valor cuantizado que se escribió."""
+        if not -128 <= db <= 0:
+            raise ValueError("Volumen fuera de rango: -128…0 dB")
         raw = int(round(db * 256))
         raw = max(-0x8000, min(0x7FFF, raw))
         u = raw & 0xFFFF
@@ -642,6 +660,8 @@ class Evo16Service:
         Cada operación se intenta por separado: si una falla, el resto sigue y el error queda
         en el resumen (un canal raro no debe abortar el perfil entero).
         """
+        from backend.presets import validate_channels
+        channels = validate_channels(channels)
         by_ch: dict[int, dict] = {}
         for c in channels:
             try:
@@ -682,11 +702,13 @@ class Evo16Service:
             if "phantom" in c:
                 v = bool(c["phantom"])
                 do(f"phantom {ch}={int(v)}", lambda ch=ch, v=v: self.set_phantom(ch, v))
-            if "gain" in c:
-                v = max(0, min(58, int(c["gain"])))
+            # The firmware mirrors gain and DI: write only the master of a linked pair.
+            mirrored_follower = bool(c.get("linked")) and ch % 2 == 0
+            if "gain" in c and not mirrored_follower:
+                v = int(c["gain"])
                 do(f"gain {ch}={v}", lambda ch=ch, v=v: self.set_gain(ch, v))
-            # El DI sólo existe en algunos canales; en el resto el setter devuelve False.
-            if ch in self.INSTR_CHANNELS and "instrument" in c:
+            # Phantom mirroring was not confirmed: preserve per-channel phantom writes.
+            if ch in self.INSTR_CHANNELS and "instrument" in c and not mirrored_follower:
                 v = bool(c["instrument"])
                 do(f"instrument {ch}={int(v)}", lambda ch=ch, v=v: self.set_instrument(ch, v))
 

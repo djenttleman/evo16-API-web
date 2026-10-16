@@ -1,23 +1,24 @@
 # Makefile for mac-evo16 — macOS IOKit USB helper
 CC     = cc
-CFLAGS = -Wall -O2
+MACOSX_DEPLOYMENT_TARGET ?= 13.0
+CFLAGS = -Wall -O2 -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 LIBS   = -framework IOKit -framework CoreFoundation
 NAME   = mac-evo16
 
 all: $(NAME)
 
-$(NAME): $(NAME).c
+$(NAME): $(NAME).c Makefile
 	$(CC) $(CFLAGS) -o $(NAME) $(NAME).c $(LIBS)
 
 clean:
 	rm -f $(NAME)
 
+PREFIX ?= $(HOME)/.local
+
 install: $(NAME)
-	sudo cp $(NAME) /usr/local/libexec/
-	sudo chown root:wheel /usr/local/libexec/$(NAME)
-	sudo chmod u+s /usr/local/libexec/$(NAME)
-	@echo "Installed $(NAME) with setuid root"
+	mkdir -p "$(PREFIX)/libexec"
+	install -m 755 $(NAME) "$(PREFIX)/libexec/$(NAME)"
+	@echo "Installed $(NAME) without elevated privileges"
 
 uninstall:
-	sudo rm -f /usr/local/libexec/$(NAME)
-	@echo "Removed $(NAME)"
+	rm -f "$(PREFIX)/libexec/$(NAME)"

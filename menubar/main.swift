@@ -1,650 +1,467 @@
-// EVO 16 Remote — app de barra de menú (icono junto al reloj, sin ícono en el Dock).
-//
-// Es el único "siempre vivo" del sistema EVO. Hace tres cosas:
-//   1. muestra el estado real (sondea /api/health del servicio),
-//   2. enciende / apaga el servicio del puerto 3000 — y **al cerrarse la app, se cierra todo**,
-//   3. publica el estado y recibe comandos **sin abrir ningún puerto** (ver abajo).
-//
-// ── Canales para otras apps (por defecto NINGUNO abre un puerto) ───────────────────────────────
-//   ESTADO     ~/Library/Application Support/EVO16Remote/estado.json      (se reescribe cada 2 s)
-//   COMANDOS   ~/Library/Application Support/EVO16Remote/comando.json     (buzón: escribir un JSON)
-//   URL        open -g "evo16remote://start" | stop | status              (LaunchServices)
-//
-//   El comando es `{"accion": "start", "id": 1}` y admite: start | stop | status | api-http-on |
-//   api-http-off | exponer-red-on | exponer-red-off | salir. La app lo ejecuta y publica el
-//   resultado en `estado.json` (campo `commandResult`, con el mismo `id`).
-//
-// ── Opcionales (menú, apagadas por defecto) ────────────────────────────────────────────────────
-//   · API HTTP en 127.0.0.1:3100  — misma forma de respuesta que launcher.py, para curl/HTTP.
-//   · Exponer la interfaz (:3000) en la red (LAN/Tailscale) — por defecto sólo loopback.
 import AppKit
 import Network
+import Security
 
-let kService      = "http://127.0.0.1:3000"
-let kAgente       = "com.david.evo16-remote"
-let kRepo         = NSString(string: "~/dev/evo16-web").expandingTildeInPath
-let kPython       = "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
-let kAgentePath   = NSString(string: "~/Library/LaunchAgents/\(kAgente).plist").expandingTildeInPath
-let kAgenteOrigen = "\(kRepo)/bin/\(kAgente).plist"
-let kLogPath      = NSString(string: "~/Library/Logs/evo16-remote.log").expandingTildeInPath
-let kCarpetaDatos = NSString(string: "~/Library/Application Support/EVO16Remote").expandingTildeInPath
-let kEstadoPath   = kCarpetaDatos + "/estado.json"
-let kCmdPath      = kCarpetaDatos + "/comando.json"
-let kPrefsPath    = kCarpetaDatos + "/prefs.json"
-let kMarcadorPath = kCarpetaDatos + "/app.pid"      // el servicio vigila este PID: si muere, se apaga
-let kPuertoAPI: UInt16 = 3100
+let servicePort = ProcessInfo.processInfo.environment["EVO16_PORT"] ?? "3000"
+let lifecyclePort = UInt16(ProcessInfo.processInfo.environment["EVO16_LIFECYCLE_PORT"] ?? "3100") ?? 3100
+let serviceURL = URL(string: "http://127.0.0.1:\(servicePort)")!
+let dataURL = ProcessInfo.processInfo.environment["EVO16_DATA_DIR"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/EVO16Remote")
+let tokenURL = dataURL.appendingPathComponent("api-token")
+let prefsURL = dataURL.appendingPathComponent("prefs.json")
+let stateURL = dataURL.appendingPathComponent("estado.json")
+let logURL = CommandLine.arguments.contains("--preview") ? dataURL.appendingPathComponent("service.log") : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/evo16-remote.log")
+let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.0.0"
 
-let kAccionesValidas = ["start", "stop", "status", "api-http-on", "api-http-off",
-                        "exponer-red-on", "exponer-red-off", "salir"]
-
-@discardableResult
-func shell(_ cmd: String) -> Int32 {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/bin/bash")
-    p.arguments = ["-c", cmd]
-    p.standardOutput = Pipe()
-    p.standardError = Pipe()
-    do { try p.run() } catch { return -1 }
-    p.waitUntilExit()
-    return p.terminationStatus
+func credential() throws -> String {
+    try FileManager.default.createDirectory(at: dataURL, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dataURL.path)
+    if !FileManager.default.fileExists(atPath: tokenURL.path) {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw NSError(domain: "EVO16", code: 1, userInfo: [NSLocalizedDescriptionKey: "No se pudo crear la credencial"])
+        }
+        let token = Data(bytes).base64EncodedString()
+        try token.write(to: tokenURL, atomically: true, encoding: .utf8)
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
+    let token = try String(contentsOf: tokenURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard token.count >= 32 else { throw NSError(domain: "EVO16", code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "La credencial API no es válida"] ) }
+    return token
 }
 
-// ── Servidor HTTP mínimo, sólo loopback (OPCIONAL: se prende del menú) ──────────────────────────
-final class ServidorAPI {
+// Optional native-client lifecycle API. One owner, bounded requests, no browser access.
+final class LifecycleAPI {
     private var listener: NWListener?
-    private let cola = DispatchQueue(label: "evo16.api.net")
-    private let manejar: (String, String) -> (Int, String)      // (método, ruta) → (código, JSON)
-    private(set) var disponible = false
-    private(set) var motivo = "apagada (no hace falta: están el archivo y el URL scheme)"
+    private let queue = DispatchQueue(label: "evo16.lifecycle")
+    private var connections = 0
+    private let token: String
+    private let handler: (String, String) -> (Int, [String: Any])
+    var changed: ((String) -> Void)?
 
-    init(manejar: @escaping (String, String) -> (Int, String)) { self.manejar = manejar }
+    init(token: String, handler: @escaping (String, String) -> (Int, [String: Any])) {
+        self.token = token
+        self.handler = handler
+    }
 
-    func arrancar(puerto: UInt16) {
+    func start() {
         guard listener == nil else { return }
         let params = NWParameters.tcp
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1",
-                                                           port: NWEndpoint.Port(rawValue: puerto)!)
-        params.allowLocalEndpointReuse = true
+        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: lifecyclePort)!)
         do {
             let l = try NWListener(using: params)
-            l.newConnectionHandler = { [weak self] conn in self?.atender(conn) }
-            l.stateUpdateHandler = { [weak self] estado in
-                switch estado {
-                case .ready:
-                    self?.disponible = true
-                    self?.motivo = "escuchando en http://127.0.0.1:\(puerto)"
-                case .failed(let e):
-                    self?.disponible = false
-                    self?.motivo = "no pude abrir el puerto \(puerto) (\(e)) — ¿lo tiene otro proceso?"
-                default:
-                    break
+            l.stateUpdateHandler = { [weak self] state in
+                let text: String
+                switch state {
+                case .ready: text = "API de encendido y apagado disponible en 127.0.0.1:\(lifecyclePort)"
+                case .failed: text = "No se pudo abrir el puerto 3100. Revisá si otra app lo utiliza."
+                default: return
                 }
+                DispatchQueue.main.async { self?.changed?(text) }
             }
-            l.start(queue: cola)
+            l.newConnectionHandler = { [weak self] connection in
+                guard let self, self.connections < 16 else { connection.cancel(); return }
+                self.connections += 1
+                var finished = false
+                let finish: () -> Void = {
+                    if !finished { finished = true; self.connections -= 1; connection.cancel() }
+                }
+                connection.start(queue: self.queue)
+                self.queue.asyncAfter(deadline: .now() + 5) { finish() }
+                self.receive(connection, Data(), finish)
+            }
+            l.start(queue: queue)
             listener = l
-        } catch {
-            disponible = false
-            motivo = "no pude abrir el puerto \(puerto): \(error)"
-        }
+        } catch { changed?("No se pudo abrir la API de encendido y apagado") }
     }
 
-    func detener() {
-        listener?.cancel()
-        listener = nil
-        disponible = false
-        motivo = "apagada (no hace falta: están el archivo y el URL scheme)"
-    }
+    func stop() { listener?.cancel(); listener = nil; changed?("API de encendido y apagado desactivada") }
 
-    private func atender(_ conn: NWConnection) {
-        // sólo loopback: si el pedido viene de la red, se ignora
-        if case let .hostPort(host, _) = conn.endpoint {
-            let h = String(describing: host)
-            if h != "127.0.0.1" && h != "::1" && h != "localhost" { conn.cancel(); return }
-        }
-        conn.start(queue: cola)
-        recibir(conn, acumulado: Data())
-    }
-
-    private func recibir(_ conn: NWConnection, acumulado: Data) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, fin, error in
-            guard let self else { return }
-            var buf = acumulado
-            if let d = data { buf.append(d) }
-            if fin || error != nil || buf.count > 65536 { conn.cancel(); return }
-            guard let texto = String(data: buf, encoding: .utf8) else { conn.cancel(); return }
-            if let finCabecera = texto.range(of: "\r\n\r\n") {
-                let primera = texto[texto.startIndex..<finCabecera.lowerBound]
-                    .split(separator: "\r\n").first.map(String.init) ?? ""
-                let campos = primera.split(separator: " ")
-                let metodo = campos.count > 0 ? String(campos[0]).uppercased() : "GET"
-                let ruta = campos.count > 1 ? String(campos[1]) : "/"
-                DispatchQueue.global().async {                 // no bloquear la cola de red
-                    let (codigo, cuerpo) = self.manejar(metodo, ruta)
-                    self.responder(conn, codigo: codigo, json: cuerpo)
+    private func receive(_ conn: NWConnection, _ previous: Data, _ finish: @escaping () -> Void) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, done, error in
+            guard let self else { finish(); return }
+            var buffer = previous
+            buffer.append(data ?? Data())
+            guard buffer.count <= 16384, error == nil else { finish(); return }
+            if let text = String(data: buffer, encoding: .utf8), text.contains("\r\n\r\n") {
+                let lines = text.components(separatedBy: "\r\n")
+                let request = lines[0].split(separator: " ").map(String.init)
+                var headers = [String: String]()
+                for line in lines.dropFirst() {
+                    if line.isEmpty { break }
+                    guard let colon = line.firstIndex(of: ":") else { finish(); return }
+                    let key = line[..<colon].lowercased()
+                    guard headers[key] == nil else { finish(); return }
+                    headers[key] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
                 }
-            } else {
-                self.recibir(conn, acumulado: buf)
-            }
+                guard request.count == 3 else { finish(); return }
+                let result: (Int, [String: Any])
+                if headers["origin"] != nil || headers["sec-fetch-site"] != nil {
+                    result = (403, ["detail": "API reservada a clientes nativos"])
+                } else if !["127.0.0.1:\(lifecyclePort)", "localhost:\(lifecyclePort)"].contains(headers["host"] ?? "") {
+                    result = (400, ["detail": "Host no permitido"])
+                } else if !self.matches(headers["authorization"] ?? "") {
+                    result = (401, ["detail": "Autenticación requerida"])
+                } else {
+                    result = self.handler(request[0], request[1])
+                }
+                let body = (try? JSONSerialization.data(withJSONObject: result.1, options: [.sortedKeys])) ?? Data()
+                let header = "HTTP/1.1 \(result.0) Result\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+                var response = Data(header.utf8); response.append(body)
+                conn.send(content: response, completion: .contentProcessed { _ in self.queue.async { finish() } })
+            } else if done { finish() }
+            else { self.receive(conn, buffer, finish) }
         }
     }
 
-    private func responder(_ conn: NWConnection, codigo: Int, json: String) {
-        let cuerpo = Data(json.utf8)
-        let cabecera = "HTTP/1.1 \(codigo) \(codigo == 200 ? "OK" : "Error")\r\n"
-            + "Content-Type: application/json; charset=utf-8\r\n"
-            + "Content-Length: \(cuerpo.count)\r\n"
-            + "Connection: close\r\n\r\n"
-        var salida = Data(cabecera.utf8)
-        salida.append(cuerpo)
-        conn.send(content: salida, completion: .contentProcessed { _ in conn.cancel() })
+    private func matches(_ authorization: String) -> Bool {
+        let expected = Array("Bearer \(token)".utf8), supplied = Array(authorization.utf8)
+        guard expected.count == supplied.count else { return false }
+        return zip(expected, supplied).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
     }
 }
 
-// ── La app ──────────────────────────────────────────────────────────────────────────────────────
 final class App: NSObject, NSApplicationDelegate {
-    private var item: NSStatusItem!
-    private var estadoItem: NSMenuItem!
-    private var apiItem: NSMenuItem!
-    private var agenteItem: NSMenuItem!
-    private var encenderItem: NSMenuItem!
-    private var apagarItem: NSMenuItem!
-    private var abrirItem: NSMenuItem!
-    private var httpItem: NSMenuItem!
-    private var redItem: NSMenuItem!
-    private var api: ServidorAPI!
-
-    // preferencias (persistidas en prefs.json; el servicio también las lee)
-    private var apiActiva = false          // API HTTP :3100  — apagada por defecto
-    private var exponerRed = false         // interfaz :3000 en la red — loopback por defecto
-
-    // estado compartido entre la UI y los canales (siempre tocado desde el main queue)
-    private var servicioArriba = false
-    private var ultimo: [String: Any] = [:]
-    private var up = false
-    private var ocupado = false
-    private var detalle = "consultando…"
-    private var comandoVisto = ""
-    private var resultadoComando: [String: Any] = [:]
+    private var statusItem: NSStatusItem!
+    private var stateItem: NSMenuItem!
+    private var powerItem: NSMenuItem!
+    private var openItem: NSMenuItem!
+    private var preferences: NSWindowController?
+    private var httpCheck: NSButton!
+    private var networkCheck: NSButton!
+    private var diagnostics: NSTextField!
+    private var reconnectButton: NSButton!
+    private var apiDescription: NSTextField!
+    private var token = ""
+    private var api: LifecycleAPI?
+    private var process: Process?
+    private var desiredRunning = false
+    private var restarting = false
+    private var terminating = false
+    private var httpEnabled = false
+    private var exposeNetwork = false
+    private var serviceUp = false
+    private var deviceOK = false
+    private var polling = false
+    private var detail = "Servicio apagado"
+    private var lastPayload: [String: Any] = [:]
+    private var apiDetail = "API de encendido y apagado desactivada"
+    private var testSession = CommandLine.arguments.contains("--preview")
+    private var retryDelay: TimeInterval = 2
+    private var retryWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        leerPrefs()
-        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Avoid two independent controllers for the same service.
+        let id = Bundle.main.bundleIdentifier ?? "app.local.evo16-remote-menubar"
+        if !CommandLine.arguments.contains("--preview") && NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 { NSApp.terminate(nil); return }
+        do { token = try credential() } catch {
+            let alert = NSAlert(error: error); alert.runModal(); NSApp.terminate(nil); return
+        }
+        if let data = try? Data(contentsOf: prefsURL),
+           let prefs = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            httpEnabled = prefs["apiHttp"] as? Bool ?? false
+            exposeNetwork = prefs["exponerRed"] as? Bool ?? false
+        }
+        if !CommandLine.arguments.contains("--preview") { migrateLegacyAgents() }
+        buildMenu()
+        api = LifecycleAPI(token: token) { [weak self] method, path in
+            var response: (Int, [String: Any]) = (503, [:])
+            DispatchQueue.main.sync { response = self?.handle(method, path) ?? response }
+            return response
+        }
+        api?.changed = { [weak self] text in self?.apiDetail = text; self?.render() }
+        if httpEnabled { api?.start() }
+        render()
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
+        poll()
+        if CommandLine.arguments.contains("--preferences") { showPreferences() }
+    }
+
+    private func buildMenu() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
-
-        estadoItem = NSMenuItem(title: "EVO 16", action: nil, keyEquivalent: "")
-        apiItem    = NSMenuItem(title: "Canales sin puerto", action: nil, keyEquivalent: "")
-        agenteItem = NSMenuItem(title: "Agente del servicio", action: nil, keyEquivalent: "")
-        for i in [estadoItem!, apiItem!, agenteItem!] { i.isEnabled = false; menu.addItem(i) }
+        stateItem = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
+        stateItem.isEnabled = false; menu.addItem(stateItem); menu.addItem(.separator())
+        openItem = NSMenuItem(title: "Abrir interfaz", action: #selector(openUI), keyEquivalent: "")
+        powerItem = NSMenuItem(title: "Encender servicio", action: #selector(togglePower), keyEquivalent: "")
+        let settings = NSMenuItem(title: "Preferencias…", action: #selector(showPreferences), keyEquivalent: ",")
+        for item in [openItem!, powerItem!, settings] { item.target = self; menu.addItem(item) }
         menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Salir", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp; menu.addItem(quit)
+        statusItem.menu = menu
+        // Native shortcuts also work while the preferences window is active.
+        let mainMenu = NSMenu()
+        let applicationItem = NSMenuItem()
+        let applicationMenu = NSMenu()
+        let shortcut = NSMenuItem(title: "Preferencias…", action: #selector(showPreferences), keyEquivalent: ",")
+        shortcut.target = self
+        applicationMenu.addItem(shortcut)
+        let quitShortcut = NSMenuItem(title: "Salir", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quitShortcut.target = NSApp
+        applicationMenu.addItem(quitShortcut)
+        applicationItem.submenu = applicationMenu
+        mainMenu.addItem(applicationItem)
+        NSApp.mainMenu = mainMenu
+    }
 
-        encenderItem = NSMenuItem(title: "Encender servicio", action: #selector(encender), keyEquivalent: "")
-        apagarItem   = NSMenuItem(title: "Apagar servicio",  action: #selector(apagar),  keyEquivalent: "")
-        abrirItem    = NSMenuItem(title: "Abrir interfaz",   action: #selector(abrir),   keyEquivalent: "")
-        for i in [encenderItem!, apagarItem!, abrirItem!] { i.target = self; menu.addItem(i) }
-        menu.addItem(.separator())
+    private func savePreferences() {
+        let data = try? JSONSerialization.data(withJSONObject: ["apiHttp": httpEnabled, "exponerRed": exposeNetwork], options: [.sortedKeys])
+        do { try data?.write(to: prefsURL, options: .atomic) }
+        catch { detail = "No se pudieron guardar las preferencias" }
+    }
 
-        httpItem = NSMenuItem(title: "Abrir la API HTTP en :\(kPuertoAPI)",
-                              action: #selector(toggleHTTP), keyEquivalent: "")
-        redItem  = NSMenuItem(title: "Exponer la interfaz en la red (LAN/Tailscale)",
-                              action: #selector(toggleRed), keyEquivalent: "")
-        for i in [httpItem!, redItem!] { i.target = self; menu.addItem(i) }
+    private func label(_ text: String, bold: Bool = false) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: text)
+        field.font = bold ? .boldSystemFont(ofSize: 13) : .systemFont(ofSize: 12)
+        field.textColor = bold ? .labelColor : .secondaryLabelColor
+        field.isSelectable = true
+        field.preferredMaxLayoutWidth = 460
+        return field
+    }
 
-        let instalar = NSMenuItem(title: "Instalar o actualizar el agente del servicio",
-                                  action: #selector(instalarAgenteDesdeMenu), keyEquivalent: "")
-        instalar.target = self
-        menu.addItem(instalar)
-        menu.addItem(.separator())
-
-        let salir = NSMenuItem(title: "Salir", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        salir.target = NSApp
-        menu.addItem(salir)
-
-        item.menu = menu
-
-        // la API HTTP es opcional: por defecto no se abre ningún puerto
-        api = ServidorAPI { [weak self] metodo, ruta in
-            guard let self else { return (500, "{\"error\":\"app sin estado\"}") }
-            return self.atenderAPI(metodo: metodo, ruta: ruta)
+    @objc private func showPreferences() {
+        if preferences == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 510),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = testSession ? "Preferencias de EVO 16 Remote · Prueba" : "Preferencias de EVO 16 Remote"
+            window.isReleasedWhenClosed = false
+            let content = NSStackView()
+            content.orientation = .vertical; content.alignment = .leading; content.spacing = 12
+            content.translatesAutoresizingMaskIntoConstraints = false
+            window.contentView!.addSubview(content)
+            NSLayoutConstraint.activate([
+                content.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 28),
+                content.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -28),
+                content.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 24),
+                content.bottomAnchor.constraint(lessThanOrEqualTo: window.contentView!.bottomAnchor, constant: -24)
+            ])
+            content.addArrangedSubview(label("Conexión", bold: true))
+            networkCheck = NSButton(checkboxWithTitle: "Permitir conexiones desde la red", target: self, action: #selector(toggleNetwork))
+            content.addArrangedSubview(networkCheck)
+            content.addArrangedSubview(label("Por defecto, solo este Mac puede conectarse. Cambiar esta opción reinicia el servicio. Para acceder desde otro equipo necesitás la credencial API; usá una red privada o Tailscale."))
+            content.addArrangedSubview(label("Integración con otras apps", bold: true))
+            content.addArrangedSubview(label("API de control: http://127.0.0.1:\(servicePort)\nLa app debe permanecer abierta para controlar el equipo."))
+            httpCheck = NSButton(checkboxWithTitle: "Permitir encender y apagar por HTTP", target: self, action: #selector(toggleHTTP))
+            content.addArrangedSubview(httpCheck)
+            apiDescription = label(apiDetail); content.addArrangedSubview(apiDescription)
+            let copy = NSButton(title: "Copiar credencial API", target: self, action: #selector(copyToken))
+            let folder = NSButton(title: "Abrir carpeta de integración", target: self, action: #selector(openData))
+            let integrationButtons = NSStackView(views: [copy, folder]); integrationButtons.spacing = 10
+            content.addArrangedSubview(integrationButtons)
+            content.addArrangedSubview(label("Diagnóstico", bold: true))
+            diagnostics = label(detail); content.addArrangedSubview(diagnostics)
+            reconnectButton = NSButton(title: "Reconectar equipo", target: self, action: #selector(reconnectDevice))
+            let logs = NSButton(title: "Abrir registro", target: self, action: #selector(openLog))
+            let diagnosticButtons = NSStackView(views: [reconnectButton!, logs]); diagnosticButtons.spacing = 10
+            content.addArrangedSubview(diagnosticButtons)
+            content.addArrangedSubview(label(testSession ? "Prueba de software · Sin verificación física de la interfaz" : "EVO 16 Remote \(appVersion) · Protocolo verificado el 15–16 de octubre de 2026"))
+            preferences = NSWindowController(window: window)
+            window.center()
         }
-        if apiActiva { api.arrancar(puerto: kPuertoAPI) }
-
-        // si falta el agente de launchd del servicio, lo deja instalado (sin Terminal)
-        asegurarAgente()
-        guardarPrefs()                                  // el servicio lee `exponerRed` de acá
-        // marca para el vigilante del servicio: si esta app muere, el servicio se apaga solo
-        try? FileManager.default.createDirectory(atPath: kCarpetaDatos, withIntermediateDirectories: true)
-        try? "\(getpid())".write(toFile: kMarcadorPath, atomically: true, encoding: .utf8)
-
-        pintar()
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in self.consultar() }
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in self.revisarComando() }
-        consultar()
+        render()
+        NSApp.activate(ignoringOtherApps: true)
+        preferences?.showWindow(nil)
+        preferences?.window?.makeKeyAndOrderFront(nil)
     }
 
-    /// Pedido de David: el servicio vive mientras la app esté abierta. Al cerrarla, se cierra todo.
-    func applicationWillTerminate(_ notification: Notification) {
-        var req = URLRequest(url: URL(string: kService + "/api/service/stop")!)
-        req.httpMethod = "POST"
-        req.timeoutInterval = 3
-        let sem = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
-        _ = sem.wait(timeout: .now() + 4)
-        matarServicio()
+    @objc private func copyToken() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(token, forType: .string) }
+    @objc private func openData() { NSWorkspace.shared.open(dataURL) }
+    @objc private func openLog() { NSWorkspace.shared.open(logURL) }
+    @objc private func openUI() { NSWorkspace.shared.open(serviceURL) }
+    @objc private func togglePower() { desiredRunning ? stop() : start() }
+    @objc private func toggleHTTP() { httpEnabled = httpCheck.state == .on; savePreferences(); httpEnabled ? api?.start() : api?.stop(); render() }
+    @objc private func toggleNetwork() {
+        exposeNetwork = networkCheck.state == .on; savePreferences()
+        if desiredRunning { restarting = true; stop(keepDesired: true) }
+        render()
     }
 
-    // MARK: - preferencias
-
-    private func leerPrefs() {
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: kPrefsPath)),
-              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
-        apiActiva = (j["apiHttp"] as? Bool) ?? false
-        exponerRed = (j["exponerRed"] as? Bool) ?? false
-    }
-
-    private func guardarPrefs() {
-        try? FileManager.default.createDirectory(atPath: kCarpetaDatos, withIntermediateDirectories: true)
-        let obj: [String: Any] = ["apiHttp": apiActiva, "exponerRed": exponerRed]
-        if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) {
-            try? d.write(to: URL(fileURLWithPath: kPrefsPath), options: .atomic)
+    private func launchConfiguration() throws -> (URL, [String], URL?) {
+        let resources = Bundle.main.resourceURL!
+        let bundled = resources.appendingPathComponent("service/EVO16Service")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) { return (bundled, [], nil) }
+        let data = try Data(contentsOf: resources.appendingPathComponent("Development.plist"))
+        let config = try PropertyListSerialization.propertyList(from: data, format: nil) as! [String: String]
+        guard let python = config["python"], let repo = config["repo"] else {
+            throw NSError(domain: "EVO16", code: 3, userInfo: [NSLocalizedDescriptionKey: "Falta el servicio incluido en la app"])
         }
+        return (URL(fileURLWithPath: python), [repo + "/backend/main.py"], URL(fileURLWithPath: repo))
     }
 
-    @objc private func toggleHTTP() {
-        apiActiva.toggle(); guardarPrefs()
-        if apiActiva { api.arrancar(puerto: kPuertoAPI) } else { api.detener() }
-        pintar()
-    }
-
-    @objc private func toggleRed() {
-        exponerRed.toggle(); guardarPrefs(); pintar()
-        reiniciarServicioSiArriba()
-    }
-
-    /// Mata el proceso del servicio SIN matar a nadie más.
-    ///
-    /// Ojo: un `pkill -f 'backend/main.py'` suelto mata cualquier proceso cuya línea de comandos
-    /// mencione esa ruta (pasó: se llevó por delante una shell de diagnóstico). Por eso: primero el
-    /// pidfile, después un patrón ACOTADO con corchetes (que no se matchea a sí mismo).
-    private func matarServicio() {
-        let uid = getuid()
-        _ = shell("launchctl kill SIGTERM gui/\(uid)/\(kAgente) 2>/dev/null")
-        if FileManager.default.fileExists(atPath: "/tmp/evo16-remote.pid") {
-            _ = shell("pkill -F /tmp/evo16-remote.pid 2>/dev/null")
-        }
-        _ = shell("pkill -f '[Pp]ython.*backend/main[.]py' 2>/dev/null")
-        Thread.sleep(forTimeInterval: 1.0)
-        _ = shell("pkill -f 'mac-evo16' 2>/dev/null")
-    }
-
-    /// El servicio lee `exponerRed` al arrancar, así que un cambio de preferencia lo reinicia **en el
-    /// lugar** (`launchctl kickstart -k`). Antes era apagar + encender con un `sleep` a ciegas, y
-    /// podía quedarse abajo.
-    private func reiniciarServicioSiArriba() {
-        guard servicioArriba else { return }
-        ocupado = true; detalle = "reiniciando…"; pintar()
-        let uid = getuid()
-        DispatchQueue.global().async {
-            if FileManager.default.fileExists(atPath: kAgentePath) {
-                _ = shell("launchctl kickstart -k gui/\(uid)/\(kAgente) 2>/dev/null")
-            } else {
-                self.matarServicio()
-                let p = Process()
-                p.currentDirectoryURL = URL(fileURLWithPath: kRepo)
-                p.executableURL = URL(fileURLWithPath: kPython)
-                p.arguments = ["backend/main.py"]
-                try? p.run()
-            }
-            var espera = 0
-            while !self.responde() && espera < 60 { Thread.sleep(forTimeInterval: 1.0); espera += 1 }
-            DispatchQueue.main.async { self.ocupado = false; self.consultar() }
-        }
-    }
-
-    // MARK: - el buzón de comandos (canal sin puertos)
-
-    /// Un cliente escribe `comando.json`; la app lo ejecuta y publica el resultado en `estado.json`.
-    private func revisarComando() {
-        guard let datos = try? Data(contentsOf: URL(fileURLWithPath: kCmdPath)),
-              let obj = try? JSONSerialization.jsonObject(with: datos) as? [String: Any],
-              let accion = (obj["accion"] as? String)?.lowercased() else { return }
-        let id = (obj["id"] as? NSNumber)?.intValue ?? 0
-        let firma = "\(accion)#\(id)"
-        guard firma != comandoVisto else { return }
-        comandoVisto = firma
-        // borrar sólo si es el mismo contenido que leímos (no pisar uno nuevo)
-        if let texto = try? String(contentsOfFile: kCmdPath, encoding: .utf8),
-           let mio = String(data: datos, encoding: .utf8), texto == mio {
-            try? FileManager.default.removeItem(atPath: kCmdPath)
-        }
-        switch accion {
-        case "start", "encender", "on":
-            encender()
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-        case "stop", "apagar", "off":
-            apagar()
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-        case "status", "estado", "refrescar":
-            consultar()
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-        case "api-http-on":
-            apiActiva = true; guardarPrefs(); api.arrancar(puerto: kPuertoAPI)
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-        case "api-http-off":
-            apiActiva = false; guardarPrefs(); api.detener()
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-        case "exponer-red-on":
-            exponerRed = true; guardarPrefs(); reiniciarServicioSiArriba()
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-        case "exponer-red-off":
-            exponerRed = false; guardarPrefs(); reiniciarServicioSiArriba()
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-        case "salir":
-            resultadoComando = ["accion": accion, "id": id, "ok": true]
-            pintar()
-            NSApp.terminate(nil)
-            return
-        default:
-            resultadoComando = ["accion": accion, "id": id, "ok": false,
-                                "error": "acción desconocida", "validas": kAccionesValidas]
-        }
-        pintar()
-    }
-
-    // MARK: - estado del servicio
-
-    private func textoDeEstado(_ payload: [String: Any]) -> String {
-        let dev = (payload["device"] as? [String: Any]) ?? [:]
-        var det: String
-        switch (payload["state"] as? String) ?? "" {
-        case "connected":
-            let mv = (dev["mainVolume"] as? NSNumber)?.doubleValue ?? 0
-            det = String(format: "equipo OK · main %.1f dB", mv)
-        case "usb_busy":           det = "USB ocupado por la app oficial"
-        case "helper_down":        det = "helper caído · reconectar"
-        case "device_unreachable": det = "equipo no contesta"
-        case "reconnecting":       det = "reconectando…"
-        default:                   det = "servicio arriba · equipo no: \((dev["error"] as? String) ?? "?")"
-        }
-        if (payload["audientAppRunning"] as? Bool) == true && (payload["state"] as? String) != "usb_busy" {
-            det += " · ⚠️ app oficial abierta"
-        }
-        return det
-    }
-
-    /// Sondeo normal (cada 2 s) — actualiza lo que ven la UI y los canales.
-    private func consultar() {
-        guard !ocupado, let url = URL(string: kService + "/api/health") else { return }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 3
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            var payload: [String: Any] = [:]
-            var arriba = false
-            if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-                payload = j
-                arriba = true
-            }
-            DispatchQueue.main.async {
-                self.servicioArriba = arriba
-                self.ultimo = payload
-                if arriba {
-                    let dev = (payload["device"] as? [String: Any]) ?? [:]
-                    self.up = (payload["ok"] as? Bool) ?? ((dev["connected"] as? Bool) ?? false)
-                    self.detalle = self.textoDeEstado(payload)
-                } else {
-                    self.up = false
-                    self.detalle = "servicio apagado"
+    private func start() {
+        guard process == nil, !terminating else { return }
+        desiredRunning = true; retryWork?.cancel()
+        do {
+            let (executable, arguments, directory) = try launchConfiguration()
+            try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
+            let log = try FileHandle(forWritingTo: logURL)
+            try log.seekToEnd()
+            let p = Process()
+            p.executableURL = executable; p.arguments = arguments; p.currentDirectoryURL = directory
+            var environment = ProcessInfo.processInfo.environment
+            environment["EVO16_PARENT_PID"] = String(getpid())
+            environment["EVO16_HOST"] = exposeNetwork ? "0.0.0.0" : "127.0.0.1"
+            environment["EVO16_DATA_DIR"] = dataURL.path
+            environment.removeValue(forKey: "EVO16_API_TOKEN")
+            environment["PYTHONUNBUFFERED"] = "1"
+            p.environment = environment; p.standardOutput = log; p.standardError = log
+            p.terminationHandler = { [weak self] ended in
+                DispatchQueue.main.async {
+                    guard let self, self.process === ended else { return }
+                    self.process = nil; self.serviceUp = false; self.deviceOK = false
+                    if self.restarting { self.restarting = false; self.start() }
+                    else if self.desiredRunning && !self.terminating {
+                        self.detail = "El servicio se cerró (\(ended.terminationStatus)). Reintentando…"
+                        let work = DispatchWorkItem { [weak self] in self?.start() }
+                        self.retryWork = work
+                        DispatchQueue.main.asyncAfter(deadline: .now() + self.retryDelay, execute: work)
+                        self.retryDelay = min(30, self.retryDelay * 2)
+                    } else { self.detail = "Servicio apagado" }
+                    self.render()
                 }
-                self.pintar()
             }
-        }.resume()
+            process = p
+            do { try p.run() } catch { process = nil; throw error }
+            try? log.close()
+            detail = "Encendiendo servicio…"; render()
+            poll()
+        } catch { desiredRunning = false; detail = "No se pudo iniciar: \(error.localizedDescription)"; render() }
     }
 
-    /// Lectura síncrona (para responder la API con datos frescos, no los de hace 2 s).
-    @discardableResult
-    private func refrescarAhora(timeout: TimeInterval = 4) -> Bool {
-        guard let url = URL(string: kService + "/api/health") else { return false }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = timeout
-        let sem = DispatchSemaphore(value: 0)
-        var payload: [String: Any] = [:]
-        var arriba = false
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-                payload = j
-                arriba = true
-            }
-            sem.signal()
-        }.resume()
-        _ = sem.wait(timeout: .now() + timeout + 1)
-        DispatchQueue.main.sync {
-            self.servicioArriba = arriba
-            self.ultimo = payload
-            let dev = (payload["device"] as? [String: Any]) ?? [:]
-            self.up = arriba && ((payload["ok"] as? Bool) ?? ((dev["connected"] as? Bool) ?? false))
-            self.detalle = arriba ? self.textoDeEstado(payload) : "servicio apagado"
-            self.pintar()
+    private func stop(keepDesired: Bool = false) {
+        desiredRunning = keepDesired; retryWork?.cancel()
+        guard let owned = process else {
+            if restarting { restarting = false; start() }
+            else { detail = "Servicio apagado"; render() }
+            return
         }
-        return arriba
-    }
-
-    private func pintar() {
-        estadoItem.title = "EVO 16 · " + detalle
-        apiItem.title = apiActiva
-            ? "API HTTP :\(kPuertoAPI) · " + ((api?.disponible ?? false) ? "activa" : (api?.motivo ?? "—"))
-            : "Canales sin puerto: estado.json + comando.json"
-        if FileManager.default.fileExists(atPath: kAgentePath) {
-            agenteItem.title = "Agente del servicio · instalado"
-        } else if FileManager.default.fileExists(atPath: kAgenteOrigen) {
-            agenteItem.title = "Agente del servicio · falta (menú de abajo)"
-        } else {
-            agenteItem.title = "Agente del servicio · falta el repo en ~/dev/evo16-web"
-        }
-        httpItem.state = apiActiva ? .on : .off
-        redItem.state = exponerRed ? .on : .off
-        encenderItem.isEnabled = !up && !ocupado
-        apagarItem.isEnabled = !ocupado
-        abrirItem.isEnabled = up
-        let simbolo = up ? "waveform.circle.fill" : "waveform.circle"
-        let img = NSImage(systemSymbolName: simbolo, accessibilityDescription: "EVO 16")
-        img?.isTemplate = true
-        item.button?.image = img
-        item.button?.toolTip = "EVO 16 Remote · \(detalle)"
-        // los mismos datos que sirve la API, en el archivo (canal por defecto, sin puertos)
-        escribirArchivoDeEstado(estadoDesde(servicioArriba, ultimo))
-    }
-
-    // MARK: - agente de launchd del servicio
-
-    @objc private func instalarAgenteDesdeMenu() {
-        asegurarAgente(forzar: true)
-        pintar()
-    }
-
-    /// Deja el plist del servicio en ~/Library/LaunchAgents y lo carga en launchd.
-    private func asegurarAgente(forzar: Bool = false) {
-        let fm = FileManager.default
-        if fm.fileExists(atPath: kAgentePath) && !forzar { return }
-        guard fm.fileExists(atPath: kAgenteOrigen) else { return }
-        try? fm.removeItem(atPath: kAgentePath)
-        try? fm.copyItem(atPath: kAgenteOrigen, toPath: kAgentePath)
-        let dominio = "gui/\(getuid())"
-        _ = shell("launchctl bootout \(dominio)/\(kAgente) 2>/dev/null")
-        _ = shell("launchctl bootstrap \(dominio) '\(kAgentePath)' 2>/dev/null")
-    }
-
-    // MARK: - acciones
-
-    @objc private func encender() {
-        ocupado = true; detalle = "encendiendo…"; pintar()
-        let uid = getuid()
-        DispatchQueue.global().async {
-            _ = shell("launchctl kickstart gui/\(uid)/\(kAgente) 2>/dev/null")
-            var espera = 0
-            while !self.responde() && espera < 24 { Thread.sleep(forTimeInterval: 0.5); espera += 1 }
-            if !self.responde() {                      // sin agente: lo arrancamos nosotros
-                let p = Process()
-                p.currentDirectoryURL = URL(fileURLWithPath: kRepo)
-                p.executableURL = URL(fileURLWithPath: kPython)
-                p.arguments = ["backend/main.py"]
-                try? p.run()
-                for _ in 0..<30 { if self.responde() { break }; Thread.sleep(forTimeInterval: 0.5) }
-            }
-            DispatchQueue.main.async { self.ocupado = false; self.consultar() }
+        detail = "Apagando servicio…"; render()
+        owned.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if owned.isRunning { kill(owned.processIdentifier, SIGKILL) }
         }
     }
 
-    @objc private func apagar() {
-        ocupado = true; detalle = "apagando…"; pintar()
-        var req = URLRequest(url: URL(string: kService + "/api/service/stop")!)
-        req.httpMethod = "POST"
-        req.timeoutInterval = 4
-        URLSession.shared.dataTask(with: req) { _, _, _ in
-            DispatchQueue.global().async {
-                Thread.sleep(forTimeInterval: 1.0)
-                self.matarServicio()
-                DispatchQueue.main.async { self.ocupado = false; self.consultar() }
-            }
-        }.resume()
+    private func request(_ path: String, method: String = "GET", completion: @escaping (Data?, HTTPURLResponse?) -> Void) {
+        var req = URLRequest(url: serviceURL.appendingPathComponent(path))
+        req.httpMethod = method; req.timeoutInterval = 3
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        URLSession.shared.dataTask(with: req) { data, response, _ in completion(data, response as? HTTPURLResponse) }.resume()
     }
 
-    @objc private func abrir() {
-        if let u = URL(string: kService) { NSWorkspace.shared.open(u) }
+    @objc private func reconnectDevice() {
+        guard serviceUp else { return }
+        request("api/reconnect", method: "POST") { [weak self] _, _ in DispatchQueue.main.async { self?.poll() } }
     }
 
-    private func responde() -> Bool {
-        guard let url = URL(string: kService + "/api/health") else { return false }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 2
-        let sem = DispatchSemaphore(value: 0)
-        var ok = false
-        URLSession.shared.dataTask(with: req) { data, _, _ in ok = (data != nil); sem.signal() }.resume()
-        _ = sem.wait(timeout: .now() + 3)
-        return ok
-    }
-
-    // MARK: - API HTTP opcional (:3100, sólo loopback)
-
-    private func atenderAPI(metodo: String, ruta: String) -> (Int, String) {
-        let camino = ruta.split(separator: "?").first.map(String.init) ?? ruta
-        switch (metodo, camino) {
-        case ("GET", "/"):
-            return (200, json(["name": "EVO 16 Remote (app de barra de menú)",
-                               "purpose": "encender/apagar el servicio y reportar su estado, incluso caído",
-                               "api": api?.motivo ?? "—",
-                               "endpoints": ["GET /api/status", "POST /api/start",
-                                             "POST /api/stop", "GET /api/logs?n=80"]]))
-
-        case ("GET", "/api/status"), ("GET", "/api/state"):
-            return (200, json(estadoAPI()))
-
-        case ("POST", "/api/start"):
-            DispatchQueue.main.async { self.encender() }
-            for _ in 0..<60 {                                   // hasta ~30 s
-                if self.refrescarAhora() { break }
-                Thread.sleep(forTimeInterval: 0.5)
+    private func poll() {
+        guard !polling else { return }
+        polling = true
+        request("api/health") { [weak self] data, response in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.polling = false
+                self.serviceUp = response?.statusCode == 200
+                if self.serviceUp, let data,
+                   let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    self.testSession = self.testSession || payload["testMode"] as? Bool == true
+                    self.lastPayload = payload; self.deviceOK = payload["ok"] as? Bool ?? false
+                    self.detail = payload["stateDetail"] as? String ?? "Esperando equipo"
+                    self.retryDelay = 2
+                } else {
+                    self.lastPayload = [:]; self.deviceOK = false
+                    if self.process != nil { self.detail = "Esperando respuesta del servicio…" }
+                }
+                self.render()
             }
-            return (200, json(estadoAPI()))
-
-        case ("POST", "/api/stop"):
-            DispatchQueue.main.async { self.apagar() }
-            for _ in 0..<40 {
-                if !self.refrescarAhora(timeout: 1.5) { break }
-                Thread.sleep(forTimeInterval: 0.4)
-            }
-            return (200, json(estadoAPI()))
-
-        case ("GET", "/api/logs"):
-            return (200, json(["file": kLogPath, "lines": colaDeLog(pedirN(ruta))]))
-
-        default:
-            return (404, json(["error": "ruta no encontrada",
-                               "paths": ["/api/status", "/api/start", "/api/stop", "/api/logs"]]))
         }
     }
 
-    private func pedirN(_ ruta: String) -> Int {
-        guard let r = ruta.range(of: "n=") else { return 80 }
-        let valor = ruta[r.upperBound...].prefix { $0.isNumber }
-        return max(1, min(500, Int(valor) ?? 80))
+    private func snapshot() -> [String: Any] {
+        return ["app": "EVO 16 Remote", "appVersion": appVersion, "testMode": testSession,
+                "service": serviceUp ? "running" : "stopped",
+                "state": serviceUp ? lastPayload["state"] ?? "not_ready" : desiredRunning ? "not_ready" : "offline",
+                "ok": serviceUp && deviceOK, "stateDetail": detail,
+                "device": lastPayload["device"] ?? NSNull(),
+                "serviceVersion": lastPayload["version"] ?? NSNull(),
+                "audientAppRunning": lastPayload["audientAppRunning"] ?? false,
+                "updatedAtEpoch": Date().timeIntervalSince1970,
+                "apiHttp": httpEnabled, "exponerRed": exposeNetwork,
+                "urls": ["loopback": serviceURL.absoluteString],
+                "integration": ["tokenFile": tokenURL.path, "urlScheme": "evo16remote://start|stop|status",
+                                "lifecycle": httpEnabled ? "http://127.0.0.1:\(lifecyclePort)" : NSNull()]]
     }
 
-    private func estadoAPI() -> [String: Any] {
-        var snap: (Bool, [String: Any]) = (false, [:])
-        DispatchQueue.main.sync { snap = (self.servicioArriba, self.ultimo) }
-        return estadoDesde(snap.0, snap.1)
+    private func render() {
+        guard statusItem != nil else { return }
+        stateItem.title = (testSession ? "PRUEBA · " : "") + detail
+        powerItem.title = desiredRunning ? "Apagar servicio" : "Encender servicio"
+        openItem.isEnabled = serviceUp
+        statusItem.button?.image = NSImage(systemSymbolName: deviceOK ? "waveform.circle.fill" : "waveform.circle", accessibilityDescription: "EVO 16: \(detail)")
+        statusItem.button?.image?.isTemplate = true
+        statusItem.button?.toolTip = "EVO 16 Remote · \(detail)"
+        httpCheck?.state = httpEnabled ? .on : .off
+        networkCheck?.state = exposeNetwork ? .on : .off
+        diagnostics?.stringValue = (testSession ? "PRUEBA · " : "") + detail
+        reconnectButton?.isEnabled = serviceUp
+        apiDescription?.stringValue = apiDetail
+        if let data = try? JSONSerialization.data(withJSONObject: snapshot(), options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: stateURL, options: .atomic)
+        }
     }
 
-    /// Construye el estado a partir de un snapshot (función pura: se puede llamar ya estando en el
-    /// main queue, sin el `sync` que haría deadlock).
-    private func estadoDesde(_ arriba: Bool, _ payload: [String: Any]) -> [String: Any] {
-        var estado: [String: Any] = [
-            "launcher": "app",
-            "service": arriba ? "running" : "stopped",
-            "state": arriba ? ((payload["state"] as? String) ?? "connected") : "offline",
-            "ok": arriba && ((payload["ok"] as? Bool) ?? false),
-            "stateDetail": arriba ? ((payload["stateDetail"] as? String) ?? "")
-                                  : "el servicio no está corriendo: escribí {\"accion\":\"start\"} en comando.json",
-            "agentInstalled": FileManager.default.fileExists(atPath: kAgentePath),
-            "device": payload["device"] ?? NSNull(),
-            "audientAppRunning": payload["audientAppRunning"] ?? NSNull(),
-            "serviceVersion": payload["version"] ?? NSNull(),
-            "urls": payload["urls"] ?? ["loopback": kService],
-            // canales (por defecto, ninguno abre un puerto)
-            "canales": [
-                "estado": kEstadoPath,
-                "comandos": kCmdPath,
-                "urlScheme": "evo16remote://start|stop|status",
-                "apiHttp": apiActiva ? "http://127.0.0.1:\(kPuertoAPI)" : NSNull(),
-            ],
-            "apiHttp": apiActiva,
-            "exponerRed": exponerRed,
-            "accionesValidas": kAccionesValidas,
-        ]
-        if !resultadoComando.isEmpty { estado["commandResult"] = resultadoComando }
-        return estado
+    private func handle(_ method: String, _ path: String) -> (Int, [String: Any]) {
+        switch (method, path.split(separator: "?").first.map(String.init) ?? path) {
+        case ("GET", "/api/status"): return (200, snapshot())
+        case ("POST", "/api/start"): start(); return (202, snapshot())
+        case ("POST", "/api/stop"): stop(); return (202, snapshot())
+        default: return (404, ["detail": "Ruta no encontrada"])
+        }
     }
 
-    /// El estado en un archivo, para clientes LOCALES sin HTTP (un ReaScript lo lee con `io.open`).
-    /// `updatedAtEpoch` dice cuándo se escribió: si está viejo, la app no está corriendo.
-    private func escribirArchivoDeEstado(_ obj: [String: Any]) {
-        var conMarca = obj
-        let ahora = Date()
-        conMarca["updatedAt"] = ISO8601DateFormatter().string(from: ahora)
-        conMarca["updatedAtEpoch"] = ahora.timeIntervalSince1970
-        conMarca["app"] = "EVO 16 Remote"
-        guard let datos = try? JSONSerialization.data(withJSONObject: conMarca,
-                                                      options: [.prettyPrinted, .sortedKeys]) else { return }
-        try? FileManager.default.createDirectory(atPath: kCarpetaDatos, withIntermediateDirectories: true)
-        try? datos.write(to: URL(fileURLWithPath: kEstadoPath), options: .atomic)
+    private func migrateLegacyAgents() {
+        // These labels belong to this project. Unload them without broad process-name matching.
+        for label in ["com.david.evo16-web", "com.david.evo16-remote", "com.david.evo16-launcher"] {
+            let plist = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(label).plist")
+            if FileManager.default.fileExists(atPath: plist.path) {
+                let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                p.arguments = ["bootout", "gui/\(getuid())/\(label)"]
+                p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+                do { try p.run(); p.waitUntilExit() } catch { continue }
+                // Preserve a backup, prevent RunAtLoad from resurrecting it at next login.
+                try? FileManager.default.moveItem(at: plist, to: plist.appendingPathExtension("deprecated"))
+            }
+        }
     }
 
-    private func colaDeLog(_ n: Int) -> [String] {
-        guard let texto = try? String(contentsOfFile: kLogPath, encoding: .utf8) else { return [] }
-        return texto.split(separator: "\n").suffix(n).map(String.init)
-    }
-
-    private func json(_ obj: [String: Any]) -> String {
-        guard let d = try? JSONSerialization.data(withJSONObject: obj,
-                                                  options: [.prettyPrinted, .sortedKeys]),
-              let s = String(data: d, encoding: .utf8) else { return "{}" }
-        return s
-    }
-
-    // Pedidos de otras apps por URL: evo16remote://start | stop | status
     func application(_ application: NSApplication, open urls: [URL]) {
-        for u in urls {
-            let bruto = (u.host ?? "").isEmpty ? u.path : (u.host ?? "")
-            switch bruto.replacingOccurrences(of: "/", with: "").lowercased() {
-            case "start", "encender": encender()
-            case "stop", "apagar":    apagar()
-            default:                  consultar()
+        for url in urls where url.scheme == "evo16remote" {
+            switch url.host {
+            case "start": start()
+            case "stop": stop()
+            case "preferences": showPreferences()
+            default: poll()
             }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        terminating = true; desiredRunning = false; retryWork?.cancel(); api?.stop()
+        if let owned = process, owned.isRunning {
+            owned.terminate()
+            let until = Date().addingTimeInterval(5)
+            while owned.isRunning && Date() < until { Thread.sleep(forTimeInterval: 0.05) }
+            if owned.isRunning { kill(owned.processIdentifier, SIGKILL) }
+        }
+        serviceUp = false; deviceOK = false; detail = "App cerrada"; render()
     }
 }
 
 let app = NSApplication.shared
-let delegado = App()
-app.delegate = delegado
+let delegate = App()
+app.delegate = delegate
 app.setActivationPolicy(.accessory)
 app.run()

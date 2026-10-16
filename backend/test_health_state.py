@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from health_state import STATES, reset, state_for, state_from   # noqa: E402
 
 CASOS = [
+    ({"connected": False, "helper": False, "reason": "device_not_found"}, False, "device_disconnected"),
+    ({"connected": False, "helper": False, "reason": "usb_busy"}, False, "usb_busy"),
     # (device que devuelve service.health(), app oficial abierta?, estado esperado)
     ({"connected": True, "helper": True, "mainVolume": -30.7}, False, "connected"),
     ({"connected": True, "helper": True}, True, "connected"),          # si responde, manda el equipo

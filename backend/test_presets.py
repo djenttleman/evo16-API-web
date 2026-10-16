@@ -1,158 +1,82 @@
-"""Tests del almacén de perfiles (backend/presets.py) — sólo archivos, sin dispositivo.
-
-Corre con:  cd backend && python3 test_presets.py
-
-Cubre guardar/leer/listar/borrar, sobrescritura, archivos corruptos y —lo más importante— que un
-nombre con barras o ".." NO pueda escribir fuera de la carpeta de perfiles.
-"""
-
+"""Complete profiles, v1 gain migration, path safety and validation before hardware writes."""
+import copy
 import json
+import sys
 import tempfile
+import unittest
 from pathlib import Path
-
-import presets
-
-
-def run() -> bool:
-    ok = fail = 0
-
-    def check(name, got, expected):
-        nonlocal ok, fail
-        if got == expected:
-            ok += 1
-            print(f"  ✅ {name}")
-        else:
-            fail += 1
-            print(f"  ❌ {name}: obtuve {got!r}, esperaba {expected!r}")
-
-    with tempfile.TemporaryDirectory() as td:
-        presets.PRESETS_DIR = Path(td)
-
-        canales = [
-            {
-                "channel": i,
-                "gain": 10 + i,
-                "phantom": i == 1,
-                "mute": i == 24,
-                "instrument": i in (1, 2, 9, 10, 17, 18),
-                "linked": i in (1, 2),
-                "linkPair": [1, 2] if i in (1, 2) else None,
-            }
-            for i in range(1, 25)
-        ]
-
-        print("── guardar / leer ──")
-        d = presets.save("Escena 1", canales)
-        check("devuelve el nombre", d["name"], "Escena 1")
-        check("guarda la fecha", bool(d.get("savedAt")), True)
-        check("archivo en disco", (Path(td) / "Escena 1.json").is_file(), True)
-        check("listado", [p["name"] for p in presets.list_presets()], ["Escena 1"])
-        check("canales que vuelven", len(presets.load("Escena 1")["channels"]), 24)
-        check("gain del canal 1", presets.load("Escena 1")["channels"][0]["gain"], 11)
-        check("phantom del canal 1", presets.load("Escena 1")["channels"][0]["phantom"], True)
-
-        print("\n── sobrescribir ──")
-        presets.save("Escena 1", canales[:2])
-        check("reescribe el mismo archivo", len(presets.load("Escena 1")["channels"]), 2)
-        check("sigue habiendo un solo perfil", len(presets.list_presets()), 1)
-
-        print("\n── nombres inválidos (no deben salir de la carpeta) ──")
-        for malo in ("../fuera", "a/b", "..", "", "x" * 65, "con;punto", "  ", "a\\b"):
-            try:
-                presets.save(malo, canales)
-                res = "PERMITIDO"
-            except presets.PresetError:
-                res = "rechazado"
-            except Exception as e:  # noqa: BLE001
-                res = f"otra excepción: {type(e).__name__}"
-            check(f"{malo!r}", res, "rechazado")
-        check("no se creó nada fuera", sorted(p.name for p in Path(td).iterdir()), ["Escena 1.json"])
-
-        print("\n── errores controlados ──")
-        try:
-            presets.load("No existe")
-            res = "cargó"
-        except presets.PresetError:
-            res = "error controlado"
-        check("leer inexistente", res, "error controlado")
-        try:
-            presets.delete("No existe")
-            res = "borró"
-        except presets.PresetError:
-            res = "error controlado"
-        check("borrar inexistente", res, "error controlado")
-
-        print("\n── archivo corrupto ──")
-        (Path(td) / "roto.json").write_text("{ esto no es json")
-        listado = presets.list_presets()
-        check("el listado lo marca", any(p.get("error") for p in listado), True)
-        try:
-            presets.load("roto")
-            res = "cargó"
-        except presets.PresetError:
-            res = "error controlado"
-        check("leerlo da error controlado", res, "error controlado")
-
-        print("── borrar ──")
-        check("delete devuelve True", presets.delete("Escena 1"), True)
-        check("carpeta sin perfiles", [p for p in presets.list_presets() if not p.get("error")], [])
-
-        print("\n── exportar / importar a ubicaciones personalizadas ──")
-        presets.save("Sala chica", canales)
-        fuera = Path(td) / "fuera" / "mi-perfil.json"          # carpeta que no existe todavía
-        destino = presets.export_preset("Sala chica", str(fuera))
-        check("export crea la carpeta destino", destino.is_file(), True)
-        check("export escribe el mismo JSON", json.loads(destino.read_text())["name"], "Sala chica")
-        try:
-            presets.export_preset("Sala chica", str(fuera))
-            res = "sobrescribió"
-        except presets.PresetError:
-            res = "rechazado"
-        check("export no pisa sin overwrite", res, "rechazado")
-        check("export con overwrite=True", presets.export_preset("Sala chica", str(fuera), True).is_file(), True)
-        try:
-            presets.export_preset("Sala chica", str(Path(td) / "sin-extension"))
-            res = "permitido"
-        except presets.PresetError:
-            res = "rechazado"
-        check("export exige .json", res, "rechazado")
-
-        # importar con otro nombre
-        otro = presets.import_preset(str(destino), "Sala grande")
-        check("import guarda en el banco", otro["name"], "Sala grande")
-        check("import conserva los canales", len(presets.load("Sala grande")["channels"]), 24)
-        # importar sin nombre: usa el del archivo
-        check("import usa el name del archivo", presets.import_preset(str(destino))["name"], "Sala chica")
-        # rechazos
-        malo = Path(td) / "no-es-perfil.json"
-        malo.write_text(json.dumps({"hola": 1}))
-        try:
-            presets.import_preset(str(malo))
-            res = "importó"
-        except presets.PresetError:
-            res = "rechazado"
-        check("import rechaza un JSON ajeno", res, "rechazado")
-        try:
-            presets.import_preset(str(Path(td) / "no-existe.json"))
-            res = "importó"
-        except presets.PresetError:
-            res = "rechazado"
-        check("import rechaza archivo inexistente", res, "rechazado")
-
-        print("\n── nombres reservados ──")
-        for r in ("import", "export", "IMPORT"):
-            try:
-                presets.save(r, canales)
-                res = "PERMITIDO"
-            except presets.PresetError:
-                res = "rechazado"
-            check(f"nombre reservado {r!r}", res, "rechazado")
-
-    print("\n========================================")
-    print(f"  Results: {ok}/{ok + fail} passed, {fail} failed")
-    print("  ✅ ALMACÉN DE PERFILES OK" if fail == 0 else "  ❌ HAY FALLOS")
-    return fail == 0
+from unittest.mock import patch
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from backend import presets
 
 
-if __name__ == "__main__":
-    raise SystemExit(0 if run() else 1)
+def channels():
+    return [{"channel": ch, "gain": 20, "mute": False, "phantom": False,
+             "instrument": False if ch in presets.DI_CHANNELS else None, "linked": False}
+            for ch in range(1, 25)]
+
+
+class PresetTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patch = patch.object(presets, "PRESETS_DIR", Path(self.tmp.name))
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop(); self.tmp.cleanup()
+
+    def test_roundtrip(self):
+        saved = presets.save("Sala chica", channels())
+        self.assertEqual(saved, presets.load("Sala chica"))
+        self.assertEqual(saved["formatVersion"], 2)
+        self.assertEqual(presets.list_presets()[0]["name"], "Sala chica")
+        self.assertTrue(presets.delete("Sala chica"))
+
+    def test_names_and_symlinks(self):
+        for name in ("../escape", "a/b", "..", "", "x" * 65, "import", "export", " bad; "):
+            with self.subTest(name=name), self.assertRaises(presets.PresetError):
+                presets.save(name, channels())
+        (Path(self.tmp.name) / "enlace.json").symlink_to("outside.json")
+        with self.assertRaises(presets.PresetError):
+            presets.save("enlace", channels())
+
+    def test_legacy_migration_preserves_wire_bytes_and_original_file(self):
+        old = channels()
+        old[0]["gain"] = 0
+        old[-1]["gain"] = 58
+        data = {"name": "Legado", "channels": old}
+        path = Path(self.tmp.name) / "Legado.json"
+        original = json.dumps(data)
+        path.write_text(original)
+        migrated = presets.load("Legado")
+        self.assertEqual(migrated["channels"][0]["gain"], -8)
+        self.assertEqual(migrated["channels"][-1]["gain"], 50)
+        self.assertEqual([c["gain"] + 8 for c in migrated["channels"]], [c["gain"] for c in old])
+        self.assertEqual(path.read_text(), original)
+        self.assertEqual(presets.import_data(migrated)["channels"], migrated["channels"])
+
+    def test_reject_incomplete_duplicate_bad_types_and_ranges(self):
+        cases = [channels()[:2], channels() + channels()[:1]]
+        for key, value in [("channel", 0), ("channel", True), ("gain", 51), ("gain", -9),
+                           ("gain", float("nan")), ("phantom", "false"), ("mute", 1)]:
+            bad = channels(); bad[0][key] = value; cases.append(bad)
+        duplicate = channels(); duplicate[-1] = copy.deepcopy(duplicate[0]); cases.append(duplicate)
+        for case in cases:
+            with self.subTest(case=case[0]), self.assertRaises(presets.PresetError):
+                presets.save("Malo", case)
+        self.assertFalse((Path(self.tmp.name) / "Malo.json").exists())
+
+    def test_link_conflicts_rejected_before_application(self):
+        bad = channels(); bad[0]["linked"] = True
+        with self.assertRaises(presets.PresetError): presets.validate_channels(bad)
+        bad[1]["linked"] = True; bad[1]["gain"] = 21
+        with self.assertRaises(presets.PresetError): presets.validate_channels(bad)
+
+    def test_import_versions_and_bad_json(self):
+        for value in [[], {"formatVersion": 99}, {"formatVersion": 2, "channels": channels()}, {"hello": 1}]:
+            with self.assertRaises(presets.PresetError): presets.import_data(value)
+        (Path(self.tmp.name) / "Roto.json").write_text("{oops")
+        self.assertIn("error", presets.list_presets()[0])
+
+
+if __name__ == "__main__": unittest.main()

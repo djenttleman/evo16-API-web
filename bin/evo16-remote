@@ -1,105 +1,52 @@
 #!/bin/bash
-# evo16-remote — control del servicio EVO 16 Remote (API + UI en el puerto 3000).
-#
-#   evo16-remote start     arranca el servicio (launchd, on-demand)
-#   evo16-remote stop      lo para y libera el USB (así podés usar la app oficial)
-#   evo16-remote restart   stop + start
-#   evo16-remote status    estado de conexión EN VIVO (una línea, apto para scripts)
-#   evo16-remote url       imprime la URL de la interfaz
-#   evo16-remote health    el JSON completo de /api/health
-#   evo16-remote logs      sigue el log
-#   evo16-remote install   instala/actualiza el agente launchd (una sola vez)
-#   evo16-remote launcher-install   instala el launcher: API para encender/apagar por HTTP
-#
-# on/off son alias de start/stop (mismo patrón que los otros servicios).
-# El servicio NO arranca solo al iniciar sesión: es on-demand (RunAtLoad=false).
-#
-# Instalación:  cp ~/dev/evo16-web/bin/evo16-remote ~/bin/ && chmod +x ~/bin/evo16-remote
-# OJO: launchctl está bloqueado dentro del gateway de Hermes; correr esto desde la Terminal.
-set -uo pipefail
-
-PROJ="$HOME/dev/evo16-web"
-PY="/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
-LABEL="com.david.evo16-remote"
-PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-DOMAIN="gui/$(id -u)"
-PORT=3000
-URL="http://127.0.0.1:$PORT"
+# Adapter for the app-owned lifecycle. Uses only tools shipped with macOS.
+set -euo pipefail
+DATA="$HOME/Library/Application Support/EVO16Remote"
+APP="${EVO16_APP_PATH:-$HOME/Applications/EVO 16 Remote.app}"
+STATE="$DATA/estado.json"
 LOG="$HOME/Library/Logs/evo16-remote.log"
+ACTION="${1:-status}"
 
-api() { curl -s -m 6 "$URL$1"; }
-
-cargado() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
-
-install_agent() {
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-    # el plist vive en el repo: así una instalación nueva no depende de nada previo
-    local src="$PROJ/bin/$LABEL.plist"
-    [ -f "$src" ] || { echo "falta $src (¿clonaste el repo completo?)"; exit 1; }
-    cp "$src" "$PLIST"
-    if cargado; then
-        launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1
-    fi
-    launchctl bootstrap "$DOMAIN" "$PLIST" && echo "agente instalado: $LABEL"
+command_app() { open -g -a "$APP" "evo16remote://$1"; }
+state_is_fresh() {
+    [ -f "$STATE" ] || return 1
+    local modified
+    modified="$(stat -f %m "$STATE")"
+    [ "$(( $(date +%s) - modified ))" -le 8 ]
 }
-
-start() {
-    if ! cargado; then
-        install_agent || exit 1
-    fi
-    launchctl kickstart "$DOMAIN/$LABEL" >/dev/null 2>&1
-    for _ in $(seq 1 20); do
-        sleep 0.5
-        api /api/health >/dev/null 2>&1 && { echo "arrancado: $URL"; api /api/health; echo; return 0; }
-    done
-    echo "arrancó pero /api/health no responde; mirá: $LOG" >&2
-    return 1
+api() {
+    [ -r "$DATA/api-token" ] || { echo 'La app todavía no creó la credencial API.' >&2; return 1; }
+    local token
+    token="$(cat "$DATA/api-token")"
+    printf 'Authorization: Bearer %s\n' "$token" | curl --silent --show-error --fail --max-time 6 \
+        --header @- "http://127.0.0.1:3000/api/$1"
+    echo
 }
-
-stop() {
-    launchctl kill SIGTERM "$DOMAIN/$LABEL" >/dev/null 2>&1
-    # por si quedó algo fuera de launchd (o un helper con el USB tomado)
-    pkill -f "backend/main.py" >/dev/null 2>&1
-    sleep 1
-    pkill -f "mac-evo16" >/dev/null 2>&1
-    echo "detenido; el USB queda libre para la app oficial"
-}
-
-install_launcher() {
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-    local src="$PROJ/bin/com.david.evo16-launcher.plist"
-    [ -f "$src" ] || { echo "falta $src"; exit 1; }
-    cp "$src" "$HOME/Library/LaunchAgents/com.david.evo16-launcher.plist"
-    launchctl bootout "gui/$(id -u)/com.david.evo16-launcher" >/dev/null 2>&1
-    launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.david.evo16-launcher.plist" \
-      && echo "launcher instalado: encender/apagar por API en http://127.0.0.1:3100"
-}
-
-case "${1:-status}" in
-    start|on)     start ;;
-    stop|off)     stop ;;
-    restart)      stop; sleep 1; start ;;
-    status)
-        if api /api/health >/dev/null 2>&1; then
-            "$PY" - "$URL" <<'PY'
-import json, sys, urllib.request
-d = json.load(urllib.request.urlopen(sys.argv[1] + "/api/health", timeout=6))
-dev = d.get("device", {})
-estado = "EQUIPO OK" if dev.get("connected") else "SIN EQUIPO"
-extra = "" if dev.get("connected") else f"  ({dev.get('error', '?')})"
-app = "  ⚠️ app EVO Control ABIERTA" if d.get("audientAppRunning") else ""
-print(f"servicio ARRIBA | {estado} | mainVolume={dev.get('mainVolume')} | {int(d.get('uptimeSeconds', 0))}s{extra}{app}")
-PY
-        else
-            cargado && echo "servicio PARADO (agente cargado)" || echo "servicio PARADO (agente no instalado)"
-            exit 1
-        fi
+case "$ACTION" in
+    start|on|stop|off|preferences)
+        case "$ACTION" in on) ACTION=start ;; off) ACTION=stop ;; esac
+        command_app "$ACTION"
+        printf '{"accepted":true,"action":"%s"}\n' "$ACTION"
         ;;
-    url)      echo "$URL" ;;
-    health)   api /api/health; echo ;;
-    info)     api /api/info; echo ;;
-    logs)     tail -f "$LOG" ;;
-    install)  install_agent ;;
-    launcher-install) install_launcher ;;
-    *)        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
+    restart)
+        command_app stop
+        stopped=0
+        for _ in {1..40}; do
+            sleep 0.2
+            if state_is_fresh && [ "$(plutil -extract state raw -o - "$STATE")" = offline ]; then stopped=1; break; fi
+        done
+        [ "$stopped" -eq 1 ] || { echo 'El servicio no se detuvo; no se envió start.' >&2; exit 1; }
+        command_app start
+        ;;
+    status)
+        if state_is_fresh; then cat "$STATE"; echo
+        else printf '{"state":"offline","ok":false,"stateDetail":"La app no responde o el estado venció"}\n'; fi
+        ;;
+    health|info) api "$ACTION" ;;
+    url) echo 'http://127.0.0.1:3000' ;;
+    logs) tail -n 80 "$LOG" ;;
+    install|launcher-install)
+        echo 'Los agentes launchd y el launcher separado están deprecados. Usá menubar/install.command.' >&2
+        exit 1 ;;
+    *) echo 'Uso: evo16-remote start|stop|restart|status|health|info|url|logs|preferences' >&2; exit 1 ;;
 esac
