@@ -33,7 +33,10 @@ cargado() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
 
 install_agent() {
     mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-    [ -f "$PLIST" ] || { echo "falta $PLIST"; exit 1; }
+    # el plist vive en el repo: así una instalación nueva no depende de nada previo
+    local src="$PROJ/bin/$LABEL.plist"
+    [ -f "$src" ] || { echo "falta $src (¿clonaste el repo completo?)"; exit 1; }
+    cp "$src" "$PLIST"
     if cargado; then
         launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1
     fi
