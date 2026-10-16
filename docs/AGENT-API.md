@@ -77,6 +77,8 @@ separado si la investigación confirma otro mapeo. No enviar valores negativos s
 | `GET / POST /api/link/{channel}` | `{"on":true}` | Pares 1–2, 3–4…; EU58 CS=3 |
 | `GET / POST /api/main-volume` | `{"db":-20}` | Q8.8 firmado, rango permitido −128…0 dB |
 | `GET /api/meters` | — | `inputs` (24), `outputs` (16), clips, en dB; cantidad de salidas pendiente de confirmación adicional |
+| `POST /api/smartgain/{channel}` | `{segundos?, objetivoDb?}` | Acomoda la ganancia de un canal midiendo su nivel real (ver **SmartGain**) |
+| `POST /api/smartgain` | `{segundos?, objetivoDb?}` | Lo mismo para los 24 canales en una sola pasada; los canales sin señal no se tocan |
 | `GET / POST /api/clock` | `{"source":"internal"}` | 1/internal, 2/optical1, 3/optical2 |
 | `POST /api/store-standalone` | — | Guarda el estado actual en la memoria del equipo; sobrescribe el anterior |
 
@@ -93,6 +95,28 @@ Conservar la ley logarítmica: −96 dB corresponde a 10 y 0 dB a 100.
 
 Cambiar el reloj a óptico sin una fuente presente puede perder la sincronización. Standalone es
 una operación de una sola vía; la comprobación física requiere ciclar la energía del equipo.
+
+## SmartGain — `POST /api/smartgain/{channel}` y `POST /api/smartgain`
+
+Acomoda la ganancia midiendo el nivel real de entrada. **No existe un comando de SmartGain en el
+equipo**: el firmware no lo dispara ni lo ejecuta por USB (ver `PROTOCOLO-EVO16.md`, CS=5). Lo hace
+el software, que ya tiene los medidores del equipo (4 transferencias, ~3 ms).
+
+- `POST /api/smartgain/2` → **un canal**. `POST /api/smartgain` → **los 24 en una sola pasada** (una
+  lectura de medidores trae todos, así que "todos" cuesta lo mismo que uno).
+- Cuerpo opcional: `{"segundos": 10, "objetivoDb": -12}`. Por defecto mide **10 s** y apunta a
+  **−12 dBFS** (el objetivo de Audient).
+- Los canales **sin señal no se tocan**: vuelven con `ok: false` y el motivo en `detail`.
+- La ganancia se recorta al rango real (**−8…+50 dB**). Si la señal entra demasiado caliente, el
+  ajuste queda en el piso y se ve en `deltaDb`.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+     -d '{"segundos":10}' http://127.0.0.1:3000/api/smartgain/2
+# {"status":"ok","ok":true,"channel":2,"peakDb":-0.1,"gainAntesDb":-5.0,"gainDb":-8,
+#  "deltaDb":-3.0,"objetivoDb":-12.0,"segundos":6.1,"muestras":24,
+#  "resumen":"canal 2: pico -0.1 dB → ganancia -8 dB"}
+```
 
 ## Perfiles
 

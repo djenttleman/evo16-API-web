@@ -60,6 +60,21 @@ El mute conserva la separación implementada y verificada: canales 1–8 en EU58
 y 9–24 en FU11 (`0x0B00`), CS=2, cuatro bytes. La corrección reciente de **link a CS=3**
 no implica cambiar la entidad del mute ADAT.
 
+### CS=5 — "soundcheck" / SmartGain: **es estado, no un comando** (verificado 16-oct-2026)
+
+En el binario de la app oficial el SmartGain se llama `InputControlModel::SoundcheckState`, es **por
+canal** y vive en **CS=5** de esta unidad. Comprobado en hardware, con **señal real** en el canal 2:
+
+| Escritura en CS=5 | Qué hace el equipo |
+|---|---|
+| `0` / `1` / `2` / `3` | Guarda el valor tal cual. **La ganancia no se mueve**; no pasa nada más |
+| Lectura en reposo | `255` = "sin estado" |
+
+La app oficial **sólo lo *poll*ea** (y lo limpia al terminar) para pintar su animación: el equipo
+**no expone un disparador** de SmartGain por USB. El análisis lo hace el software —medir el nivel
+con los medidores de `0x3C` y escribir la ganancia de `CS=1`—, que es como está implementado en
+`POST /api/smartgain*`.
+
 ## Reloj — unidad `0x28` (ClockSelector)
 
 | CS | Datos | Valor |

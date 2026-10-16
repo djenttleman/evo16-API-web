@@ -187,6 +187,104 @@ def set_main_volume(req: VolumeRequest, request: Request):
     return {"mainVolume": runtime(request).call("set_main_volume", req.db, write=True), "status": "ok"}
 
 
+class SmartGainRequest(StrictBody):
+    segundos: float | None = Field(default=None, gt=0, le=120)
+    objetivoDb: float | None = Field(default=None, ge=-60, le=0)
+
+
+def _smartgain_plan(ganancia_db: float, pico_db: float, objetivo_db: float) -> int:
+    """Ganancia nueva para que el pico medido caiga en el objetivo, recortada al rango real."""
+    return int(round(min(50.0, max(-8.0, ganancia_db + (objetivo_db - pico_db)))))
+
+
+async def _smartgain_medir(rt, canales: list[int], segundos: float, paso: float = 0.25) -> dict:
+    """Muestrea los medidores y devuelve el pico por canal (llamadas cortas, ~3 ms cada una).
+
+    A propósito NO se hace dentro de un `runtime.call(...)`: el runtime corta a los 10 s y su worker
+    es único, así que la espera vive acá, en el endpoint, con `await` entre lectura y lectura.
+    """
+    import asyncio
+    import time
+    picos = {ch: -120.0 for ch in canales}
+    t0 = time.monotonic()
+    muestras = 0
+    while time.monotonic() - t0 < max(1.0, segundos):
+        niveles = rt.meter_values().get("inputs") or []
+        for ch in canales:
+            v = niveles[ch - 1] if len(niveles) >= ch else None
+            if v is not None and v > picos[ch]:
+                picos[ch] = float(v)
+        muestras += 1
+        await asyncio.sleep(paso)
+    return {"picos": picos, "muestras": muestras, "segundos": round(time.monotonic() - t0, 1)}
+
+
+@app.post("/api/smartgain/{channel}")
+async def smartgain_channel(channel: int, request: Request, req: SmartGainRequest | None = None):
+    """Acomoda la ganancia de UN canal midiendo su nivel (el "Smartgain" de la app, hecho acá).
+
+    El equipo no expone un disparador por USB: **CS=5** de la unidad 0x3A es sólo el **estado** del
+    soundcheck (verificado en hardware con señal real en el canal 2: escribir 0/1/2/3 lo guarda tal
+    cual y la ganancia NO se mueve; en reposo devuelve 255 = "sin estado"). La app oficial lo
+    *poll*ea y lo limpia. Así que el análisis lo hace el software: se mide con los medidores del
+    propio equipo y se deja la ganancia para que el pico quede en `objetivoDb` (−12 dBFS).
+
+    Cuerpo opcional: `{"segundos": 10, "objetivoDb": -12}`
+    """
+    if not 1 <= channel <= 24:
+        raise HTTPException(400, f"canal fuera de rango (1-24): {channel}")
+    segundos = req.segundos if req and req.segundos else 10.0
+    objetivo = req.objetivoDb if req and req.objetivoDb is not None else -12.0
+    rt = runtime(request)
+    med = await _smartgain_medir(rt, [channel], segundos)
+    pico = med["picos"][channel]
+    antes = rt.call("get_gain", channel)
+    if pico <= -119.0:
+        return {"status": "ok", "ok": False, "channel": channel, "peakDb": None, "gainDb": antes,
+                "objetivoDb": objetivo, "segundos": med["segundos"],
+                "resumen": "sin señal en el canal: no lo toqué"}
+    nuevo = _smartgain_plan(antes, pico, objetivo)
+    aplicado = rt.call("set_gain", channel, nuevo, write=True)
+    return {"status": "ok", "ok": True, "channel": channel, "peakDb": round(pico, 1),
+            "gainAntesDb": antes, "gainDb": aplicado, "deltaDb": round(aplicado - antes, 1),
+            "objetivoDb": objetivo, "segundos": med["segundos"], "muestras": med["muestras"],
+            "resumen": f"canal {channel}: pico {round(pico, 1)} dB → ganancia {aplicado} dB"}
+
+
+@app.post("/api/smartgain")
+async def smartgain_todos(request: Request, req: SmartGainRequest | None = None):
+    """Igual, para los 24 canales **en una sola pasada**: una lectura de medidores trae todos.
+
+    Los canales sin señal **no se tocan** y vienen marcados `ok: false` con el motivo.
+    """
+    segundos = req.segundos if req and req.segundos else 10.0
+    objetivo = req.objetivoDb if req and req.objetivoDb is not None else -12.0
+    rt = runtime(request)
+    canales = list(range(1, 25))
+    med = await _smartgain_medir(rt, canales, segundos)
+    resultados = []
+    for ch in canales:
+        pico = med["picos"][ch]
+        try:
+            antes = rt.call("get_gain", ch)
+        except Exception as e:                          # noqa: BLE001
+            resultados.append({"channel": ch, "ok": False, "peakDb": round(pico, 1),
+                               "detail": f"no pude leer la ganancia: {e}"})
+            continue
+        if pico <= -119.0:
+            resultados.append({"channel": ch, "ok": False, "peakDb": None, "gainDb": antes,
+                               "detail": "sin señal en el canal: no lo toqué"})
+            continue
+        nuevo = _smartgain_plan(antes, pico, objetivo)
+        aplicado = rt.call("set_gain", ch, nuevo, write=True)
+        resultados.append({"channel": ch, "ok": True, "peakDb": round(pico, 1),
+                           "gainAntesDb": antes, "gainDb": aplicado,
+                           "deltaDb": round(aplicado - antes, 1)})
+    ajustados = [r for r in resultados if r["ok"]]
+    return {"status": "ok", "ok": bool(ajustados), "objetivoDb": objetivo,
+            "segundos": med["segundos"], "muestras": med["muestras"], "canales": resultados,
+            "resumen": f"{len(ajustados)} canal(es) ajustado(s) de {len(resultados)}"}
+
 @app.get("/api/meters")
 def meters(request: Request):
     return runtime(request).meter_values()

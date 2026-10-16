@@ -630,6 +630,81 @@ class Evo16Service:
         finally:
             self._reconnecting = False
 
+    # ── SMARTGAIN (medir el nivel y acomodar la ganancia, como el "Smartgain" de la app) ──
+    # El EQUIPO NO expone un disparador por USB: CS=5 de la unidad 0x3A es un registro de ESTADO
+    # del soundcheck. Verificado en hardware el 16-oct-2026 con señal real en el canal 2: escribir
+    # 0/1/2/3 en CS=5 lo guarda tal cual y la ganancia NO se mueve; en reposo devuelve 255 ("sin
+    # estado"). La app oficial solo lo *poll*ea y lo limpia. Así que el análisis lo hacemos acá:
+    # tenemos los medidores en vivo (4 transferencias, ~3 ms), muestreamos, sacamos el pico y
+    # dejamos la ganancia para que ese pico quede en el objetivo (−12 dBFS, el de Audient).
+    SMARTGAIN_OBJETIVO_DB = -12.0
+    SMARTGAIN_SEGUNDOS    = 10.0
+    SMARTGAIN_PASO_S      = 0.25
+
+    def smartgain(self, canales: list[int] | None = None, segundos: float | None = None,
+                  objetivo_db: float | None = None, paso: float | None = None) -> dict:
+        """Mide los canales y les acomoda la ganancia: uno solo o todos, en UNA pasada.
+
+        Una sola lectura de medidores ya trae los 24 canales, así que "todos" cuesta lo mismo que
+        uno. Los canales **sin señal no se tocan** y se informan aparte.
+
+        OJO: esto mide en tiempo real, así que **no lo llames por `runtime.call(...)`** — el runtime
+        corta a los 10 s y su worker es único. Los endpoints `/api/smartgain*` hacen la espera afuera
+        (en el handler, con llamadas cortas de medidores) y usan esto via `get_gain`/`set_gain`.
+        """
+        import time as _t
+        segundos = self.SMARTGAIN_SEGUNDOS if segundos is None else float(segundos)
+        objetivo_db = self.SMARTGAIN_OBJETIVO_DB if objetivo_db is None else float(objetivo_db)
+        paso = self.SMARTGAIN_PASO_S if paso is None else max(0.05, float(paso))
+        if canales is None:
+            canales = list(range(1, self.NUM_INPUTS + 1))
+        for ch in canales:
+            if not (1 <= ch <= self.NUM_INPUTS):
+                raise ValueError(f"canal fuera de rango (1-{self.NUM_INPUTS}): {ch}")
+
+        picos = {ch: -120.0 for ch in canales}
+        t0 = _t.time()
+        muestras = 0
+        while _t.time() - t0 < max(1.0, segundos):
+            try:
+                niveles = self.get_meters().get("inputs") or []
+            except Exception:                          # noqa: BLE001  (una lectura fallida no corta)
+                niveles = []
+            for ch in canales:
+                v = niveles[ch - 1] if len(niveles) >= ch else None
+                if v is not None and v > picos[ch]:
+                    picos[ch] = float(v)
+            muestras += 1
+            _t.sleep(paso)
+
+        resultados = []
+        for ch in canales:
+            pico = picos[ch]
+            try:
+                antes = self.get_gain(ch)
+            except Exception as e:                     # noqa: BLE001
+                resultados.append({"channel": ch, "ok": False, "peakDb": round(pico, 1),
+                                   "detail": f"no pude leer la ganancia: {e}"})
+                continue
+            if pico <= -119.0:
+                resultados.append({"channel": ch, "ok": False, "peakDb": None, "gainDb": antes,
+                                   "detail": "sin señal en el canal: no lo toqué"})
+                continue
+            objetivo_ch = min(float(GAIN_MAX_DB), max(float(GAIN_MIN_DB), antes + (objetivo_db - pico)))
+            aplicado = self.set_gain(ch, int(round(objetivo_ch)))
+            resultados.append({"channel": ch, "ok": True, "peakDb": round(pico, 1),
+                               "gainAntesDb": antes, "gainDb": aplicado,
+                               "deltaDb": round(aplicado - antes, 1)})
+        return {
+            "objetivoDb": objetivo_db,
+            "segundos": round(_t.time() - t0, 1),
+            "muestras": muestras,
+            "canales": resultados,
+            "ok": any(r["ok"] for r in resultados),
+            "resumen": (f"{sum(1 for r in resultados if r['ok'])} canal(es) ajustado(s) "
+                        f"de {len(resultados)}"),
+        }
+
     # ── PERFILES (capturar / inyectar el estado de los preamps) ──
     # Se apoya en get_all_status() para capturar y en los setters para inyectar. El formato de
     # cada canal es el que espera presets.py (ver ese módulo).
