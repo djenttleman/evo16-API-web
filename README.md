@@ -249,13 +249,28 @@ un comando. Es de **una sola vía**: pisa el estado guardado antes y no se puede
 desde la API; se verifica **ciclando la energía** del equipo (al volver debe cargar ese estado).
 En la UI es el botón «GUARDAR EN LA INTERFAZ».
 
-## Encender y apagar por API (para extensiones externas)
+## App de barra de menú
 
-El servicio no puede arrancarse a sí mismo, así que hay un **launcher chiquito** (sólo stdlib, no
-toca el USB) en **`http://127.0.0.1:3100`**: `GET /api/status` · `POST /api/start` · `POST /api/stop`
-· `GET /api/logs?n=80`. Además el servicio expone su propio `POST /api/service/stop`.
+`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj, sin ícono en el Dock, con tres
+acciones: **Encender servicio**, **Apagar servicio** y **Salir**. El ítem muestra el estado real
+(ícono relleno = equipo OK, hueco = servicio arriba sin equipo) y ofrece «Abrir interfaz».
 
-Se instala una sola vez desde la Terminal: `~/bin/evo16-remote launcher-install`.
+Es además la **puerta programática** para otras apps, por esquema de URL (sin exponer ningún endpoint
+HTTP de ciclo de vida):
+
+```bash
+open -g "evo16remote://start"     # encender
+open -g "evo16remote://stop"      # apagar (libera el USB)
+```
+
+Compilar/instalar: `./menubar/build.sh --open` (Command Line Tools; queda en `~/Applications`).
+
+## Encender y apagar por API (alternativa HTTP)
+
+Si se prefiere HTTP, `launcher.py` expone `GET /api/status` · `POST /api/start` · `POST /api/stop` ·
+`GET /api/logs?n=80` en **`http://127.0.0.1:3100`** (sólo stdlib, no toca el USB). Se instala una vez
+con `~/bin/evo16-remote launcher-install`. El servicio, por su lado, expone su propio
+`POST /api/service/stop`.
 
 ## Medidores en tiempo real
 
