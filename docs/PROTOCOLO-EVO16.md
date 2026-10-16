@@ -63,7 +63,10 @@ Cambiarlo a óptica sin nada conectado deja al equipo sin reloj.
 | CUE 1 | 19 | — | mismo formato (`setCue1Volume`); en este firmware los CS 19/20/22 hacen STALL y 21/23 responden 0 dB — **sin mapear** |
 | **Store Standalone** | 24 | 4 bytes en cero | **trigger write-only**: guarda el estado completo en la memoria interna de la interfaz |
 
-La pantalla del equipo usa escala **0-100**: `dB = (v − 100) × 0.96` (0 = −96 dB, 100 = 0 dB).
+La pantalla del equipo usa escala **logarítmica**, no lineal:
+**`pantalla = 100 × 10^(dB / 96)`** ⇔ **`dB = 96 × log10(pantalla / 100)`**
+(comprobado contra el equipo: −96 dB muestra 10 · −61.4 dB muestra 22 · 0 dB muestra 100).
+El piso del registro es −128 dB (Q8.8 con signo), que es el silencio real.
 Confirmado girando la perilla física (CS=18 pasó de `[174,199]` = −56.3 dB a `[0,160]` = −96.0 dB).
 La app oficial **no expone** este control.
 

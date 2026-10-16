@@ -431,13 +431,20 @@ function bindPresets() {
 // ── Volumen del MAIN OUT (unidad 0x36 CS=18) ──
 // Registro descubierto desensamblando la app oficial (UacXUAudientMonitorController::setMainVolume):
 // 2 bytes Q8.8 con signo. La app NO expone este control; acá lo mandamos por USB.
-// Escala de la pantalla del equipo (confirmada por David): 0 = −96 dB y 100 = 0 dB → lineal:
-//     dB = (v − 100) × 0.96        v = dB / 0.96 + 100
+// La pantalla del equipo NO es lineal en dB — es logarítmica (comprobado contra el equipo, 16-oct-2026):
+//     pantalla = 100 × 10^(dB / 96)        dB = 96 × log10(pantalla / 100)
+//   · −96 dB  → 10 en pantalla     (con la recta vieja, el slider 0 mandaba −96 y la pantalla decía 10 ✗)
+//   · −61.4 dB → 22                (el slider 36 mandaba −61.4 por la recta y la pantalla decía 22 ✗)
+//   · 0 dB    → 100
+// Antes se usaba la recta `dB = (v − 100) × 0.96`: por eso el número del slider se corría del de la
+// pantalla. Con esta ley, el número del slider y el de la pantalla son EL MISMO.
 // El valor se manda MIENTRAS se desliza (throttle ~90 ms, siempre el último valor) para que el
 // equipo avance en conjunto con el slider, como si fuera la perilla.
-const VOL_MIN_DB = -96, VOL_MAX_DB = 0;
-const volToDb = (v) => VOL_MIN_DB + (v / 100) * (VOL_MAX_DB - VOL_MIN_DB);
-const dbToVol = (db) => Math.round(((db - VOL_MIN_DB) / (VOL_MAX_DB - VOL_MIN_DB)) * 100);
+const VOL_PISO_DB = -128;          // piso real del registro (Q8.8 con signo: −32768 / 256)
+const volToDb = (v) => (v <= 0 ? VOL_PISO_DB : Math.max(VOL_PISO_DB, 96 * Math.log10(v / 100)));
+const dbToVol = (db) => (db <= VOL_PISO_DB + 8 ? 0
+  : Math.min(100, Math.floor(100 * Math.pow(10, db / 96) + 1e-9)));   // +1e-9: redondeo del log/pow
+                                                                      // floor: la pantalla trunca igual
 
 function bindMainVolume() {
   const el = document.getElementById('main-volume');

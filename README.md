@@ -236,8 +236,8 @@ indique; nunca pisa un archivo existente salvo que se pida), `IMPORTAR` y `BORRA
 lo confirmó la **perilla física** del equipo: al bajarla el registro pasó de `[174,199]` (−56.3 dB) a
 `[0,160]` (−96.0 dB). Los volúmenes de CUE usan el mismo esquema en `CS=19` y siguientes.
 
-**Escala de la pantalla del equipo** (0–100, confirmada en hardware): `0 = −96 dB` y `100 = 0 dB`,
-lineal → `dB = (v − 100) × 0.96`. El slider de la UI usa esa misma escala y **manda el valor
+**Escala de la pantalla del equipo** (0–100, comprobada en hardware con dos mediciones): es
+logarítmica, **`pantalla = 100 × 10^(dB / 96)`** ⇔ `dB = 96 × log10(v / 100)` (−96 dB = 10 · −61.4 dB = 22 · 0 dB = 100). El slider de la UI usa esa misma escala y **manda el valor
 mientras se desliza** (throttle ~90 ms, siempre el último), así el equipo avanza en conjunto con el
 slider como si fuera la perilla.
 
@@ -256,30 +256,32 @@ En la UI es el botón «GUARDAR EN LA INTERFAZ».
 
 ## App de barra de menú
 
-`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj, sin ícono en el Dock, con tres
-acciones: **Encender servicio**, **Apagar servicio** y **Salir**. El ítem muestra el estado real
-(ícono relleno = equipo OK, hueco = servicio arriba sin equipo) y ofrece «Abrir interfaz».
+`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj, sin ícono en el Dock: muestra el
+estado en vivo, enciende/apaga el servicio, **sirve la API local del `:3100`** (es el único que puede
+reportar `offline`) y **escribe el mismo estado en un archivo** para clientes locales que no quieran
+HTTP: `~/Library/Application Support/EVO16Remote/estado.json`. Si falta el agente de launchd del
+servicio, **lo instala sola**.
 
-Es además la **puerta programática** para otras apps, por esquema de URL (sin exponer ningún endpoint
-HTTP de ciclo de vida):
+Tres formas de usarla desde otra app (detalle en [`docs/AGENT-API.md`](docs/AGENT-API.md)):
 
 ```bash
-open -g "evo16remote://start"     # encender
-open -g "evo16remote://stop"      # apagar (libera el USB)
+# 1) leer el archivo (lo más simple para un ReaScript: io.open)
+# 2) HTTP local
+curl -s http://127.0.0.1:3100/api/status
+# 3) esquema de URL
+open -g "evo16remote://start"     # o stop
 ```
 
 Compilar/instalar: `./menubar/build.sh --open` (Command Line Tools; queda en `~/Applications`).
 
-## Encender y apagar por API (alternativa HTTP)
+## Encender y apagar por API (alternativa sin app)
 
 Si se prefiere HTTP, `launcher.py` expone `GET /api/status` · `POST /api/start` · `POST /api/stop` ·
 `GET /api/logs?n=80` en **`http://127.0.0.1:3100`** (sólo stdlib, no toca el USB). Se instala una vez
 con `~/bin/evo16-remote launcher-install`. El servicio, por su lado, expone su propio
 `POST /api/service/stop`.
 
-Es además el **único** que puede decir `state: "offline"`: vive fuera del servicio, así que sabe
-cuándo no hay nadie escuchando. Un cliente externo puede tomar de ahí un estado único para todo
-(`connected` / `usb_busy` / `helper_down` / `device_unreachable` / `not_ready` / **`offline`**).
+> ⚠️ La app y el launcher usan el **mismo puerto y la misma forma de respuesta**: usá uno u otro.
 
 ## Medidores en tiempo real
 

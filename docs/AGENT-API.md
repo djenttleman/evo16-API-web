@@ -113,63 +113,78 @@ CS=3); al deslinkear el equipo **no** restaura los valores previos de cada canal
 
 | Método | Ruta | Cuerpo | Notas |
 |---|---|---|---|
-| GET/POST | `/api/main-volume` | `{"db": -20}` | Control que **la app oficial no expone**. Escala de la pantalla del equipo: **0 = −96 dB, 100 = 0 dB** ⇒ `dB = (v − 100) × 0.96` |
+| GET/POST | `/api/main-volume` | `{"db": -20}` | Control que **la app oficial no expone**. Escala de la pantalla del equipo: **logarítmica**, `pantalla = 100 × 10^(dB/96)` (= `dB = 96 × log10(v/100)`: −96 dB → 10, 0 dB → 100) |
 
 ## Encender y apagar el servicio
 
-### Recomendado para otras apps: la app de barra de menú (sin exponer nada por HTTP)
+### La app de barra de menú (recomendado): estado + encendido, sin HTTP obligatorio
 
-`EVO 16 Remote.app` (código en `menubar/`) vive en la barra de menú con tres acciones —**Encender
-servicio**, **Apagar servicio**, **Salir**— y muestra el estado real en el propio ítem (ícono relleno
-= equipo OK, hueco = servicio arriba sin equipo, apagado = servicio abajo).
+`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj y es **el proceso que existe fuera del
+servicio**, así que es el único que puede decir `offline`. Hace tres cosas:
 
-Además acepta pedidos por **esquema de URL**, que es la puerta programática: **no hay ningún endpoint
-HTTP de ciclo de vida**, sólo la app.
+1. **Muestra el estado** en el propio ítem (relleno = equipo OK, hueco = problema) y en el menú:
+   *estado en vivo* · *API :3100* · *agente del servicio* · **Encender** · **Apagar** ·
+   *Abrir interfaz* · *Instalar o actualizar el agente* · *Salir*.
+2. **Sirve una API local** en `http://127.0.0.1:3100` (sólo loopback), con la misma forma de
+   respuesta que el launcher: `GET /api/status` · `POST /api/start` · `POST /api/stop` ·
+   `GET /api/logs?n=80`.
+3. **Escribe el estado en un archivo** (lo más cómodo para un cliente local):
+   `~/Library/Application Support/EVO16Remote/estado.json`
+
+Y si falta el agente de launchd del servicio, **lo instala sola al arrancar**: no hay que correr nada
+en la Terminal.
+
+#### Opción A (la más simple para RLM / ReaScript): leer el archivo
+
+```lua
+local ruta = os.getenv("HOME") .. "/Library/Application Support/EVO16Remote/estado.json"
+local f = io.open(ruta, "r"); if not f then return end
+local txt = f:read("*a"); f:close()
+-- JSON con: state ("connected" | "usb_busy" | "helper_down" | "device_unreachable" | "not_ready" |
+-- "offline"), ok, stateDetail, service, device, apiPort, updatedAtEpoch
+```
+
+Sin puertos de por medio, y si la app se cerró `updatedAtEpoch` queda viejo — eso **es** el `offline`.
+
+#### Opción B: por HTTP
 
 ```bash
-open -g "evo16remote://start"     # enciende el servicio (y la app si no estaba corriendo)
-open -g "evo16remote://stop"      # lo apaga, liberando el USB
+curl -s http://127.0.0.1:3100/api/status | jq '{state, ok, service, stateDetail}'
+curl -X POST http://127.0.0.1:3100/api/start
+curl -X POST http://127.0.0.1:3100/api/stop
+```
+
+#### Opción C: por URL, sin parsear nada
+
+```bash
+open -g "evo16remote://start"     # enciende (y abre la app si no estaba corriendo)
+open -g "evo16remote://stop"      # apaga, liberando el USB
 open -g "evo16remote://status"    # sólo refresca el estado
 ```
 
-Después de `start` hay que esperar ~5-10 s a que el servicio abra el dispositivo; para saber cuándo
-está listo se sondea `GET http://127.0.0.1:3000/api/health`. Desde un ReaScript:
-
 ```lua
-os.execute('open -g "evo16remote://start"')
+os.execute('open -g "evo16remote://start"')   -- ReaScript
 ```
 
-Compilar/instalar la app: `./menubar/build.sh --open` (requiere las Command Line Tools; queda en
-`~/Applications`). Para que arranque con el sistema, agregala a «Iniciar sesión».
+Después de encender hay que esperar ~5-10 s a que el servicio abra el dispositivo: la API de la app
+espera y devuelve el estado ya resuelto, y el archivo se reescribe cada 2 s.
 
-### Alternativa: launcher HTTP en el puerto 3100
+Compilar/instalar: `./menubar/build.sh --open` (Command Line Tools; queda en `~/Applications`). Para
+que arranque con el sistema, agregala a «Iniciar sesión».
 
-Si preferís encender/apagar por HTTP en vez de por URL, está `launcher.py` (sólo stdlib, no toca el
-USB), que escucha en **`http://127.0.0.1:3100`**:
+### Alternativa sin app: launcher HTTP en el puerto 3100
 
-| Método | Ruta | Qué hace |
-|---|---|---|
-| GET | `/api/status` | `{"service": "running"\|"stopped", "device": {...}, "agentInstalled": true}` |
-| POST | `/api/start` | Arranca el servicio y **espera** a que responda |
-| POST | `/api/stop` | Lo detiene ordenado (SIGTERM: libera el USB) |
-| GET | `/api/logs?n=80` | Últimas líneas del log del servicio |
+Si se prefiere HTTP, `launcher.py` expone `GET /api/status` · `POST /api/start` · `POST /api/stop` ·
+`GET /api/logs?n=80` en **`http://127.0.0.1:3100`** (sólo stdlib, no toca el USB). Se instala una vez
+con `~/bin/evo16-remote launcher-install`. El servicio, por su lado, expone su propio
+`POST /api/service/stop`.
 
-Se instala una sola vez desde la Terminal: `~/bin/evo16-remote launcher-install`.
+Es además el **único** que puede decir `state: "offline"`: vive fuera del servicio, así que sabe
+cuándo no hay nadie escuchando. Un cliente externo puede tomar de ahí un estado único para todo
+(`connected` / `usb_busy` / `helper_down` / `device_unreachable` / `not_ready` / **`offline`**).
 
-### El servicio apagándose solo
-
-| Método | Ruta | Qué hace |
-|---|---|---|
-| POST | `/api/service/stop` | Responde 200 **y después** baja (libera el USB) |
-
-### Receta para una extensión externa (por ejemplo la de REAPER)
-
-```bash
-curl -s http://127.0.0.1:3000/api/health                # ¿está todo arriba?
-open -g "evo16remote://start"                           # si no, encenderlo (URL, sin HTTP)
-#   ... uso normal: http://127.0.0.1:3000/api/... (gain, phantom, link, meters, clock…)
-curl -X POST http://127.0.0.1:3000/api/service/stop    # o: open -g "evo16remote://stop"
-```
+> ⚠️ Misma forma de respuesta que la app y **mismo puerto**: usá uno u otro, no los dos. Si la app ya
+> está sirviendo el `:3100`, el launcher no podrá abrir el puerto (y al revés).
 
 ## Medidores (niveles en tiempo real)
 
