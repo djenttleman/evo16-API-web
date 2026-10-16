@@ -154,6 +154,38 @@ app.add_middleware(
 # Device service
 service: Evo16Service | None = None
 
+
+def _vigilante_de_la_app() -> None:
+    """Si la app de barra de menú escribió su marca (`app.pid`) y ese proceso ya no está, este
+    servicio se apaga: es el pedido de David — «el servicio funciona solo con la app abierta».
+
+    Así funciona incluso si la app murió de golpe (kill, crash), porque el marcador queda con un PID
+    muerto. Si NO hay marcador, el servicio es independiente (lo arrancó la Terminal o el wrapper) y
+    no se apaga solo.
+    """
+    import time as _t
+    marca = Path.home() / "Library" / "Application Support" / "EVO16Remote" / "app.pid"
+    while True:
+        _t.sleep(3)
+        try:
+            if not marca.exists():
+                continue
+            pid = int((marca.read_text().strip() or "0"))
+            if pid <= 0:
+                continue
+            os.kill(pid, 0)                       # sólo pregunta si vive: no le manda señal
+        except ProcessLookupError:
+            print("👋 la app cerró: el servicio se apaga con ella (pedido de David)")
+            try:
+                if service is not None:
+                    service.disconnect()          # libera el USB antes de irse
+            except Exception:
+                pass
+            os._exit(0)
+        except Exception:                         # noqa: BLE001  (marca ilegible: no es asunto mío)
+            continue
+
+
 # Models
 class GainRequest(BaseModel):
     db: int
@@ -178,6 +210,8 @@ async def startup():
         print("   Is the official EVO Control app closed?")
         print("   Web UI will show demo/simulated mode")
         service = None
+    import threading
+    threading.Thread(target=_vigilante_de_la_app, daemon=True).start()
     webbrowser.open("http://localhost:3000")
 
 
@@ -615,6 +649,24 @@ async def serve_static(filename: str):
     raise HTTPException(404)
 
 
+def _host_de_escucha() -> str:
+    """Dónde escucha el servicio: **solo loopback** salvo que la app lo exponga a la red.
+
+    La app escribe `exponerRed` en sus preferencias (menú: «Exponer la interfaz en la red»), porque
+    el caso normal es consumirla desde el mismo Mac (RLM, un ReaScript, curl). `EVO16_HOST` manda si
+    está definido (lo usa el agente de launchd).
+    """
+    import json as _json
+    if os.environ.get("EVO16_HOST"):
+        return os.environ["EVO16_HOST"]
+    ruta = Path.home() / "Library" / "Application Support" / "EVO16Remote" / "prefs.json"
+    try:
+        return "0.0.0.0" if _json.loads(ruta.read_text()).get("exponerRed") else "127.0.0.1"
+    except Exception:                              # noqa: BLE001  (sin preferencias → lo seguro)
+        return "127.0.0.1"
+
 if __name__ == "__main__":
     _cleanup_conflicts()
-    uvicorn.run(app, host="0.0.0.0", port=3000, log_level="info")
+    # host: 127.0.0.1 por defecto (la interfaz y la API son para consumo LOCAL desde este Mac);
+    # la app puede prender la exposición en red desde sus preferencias.
+    uvicorn.run(app, host=_host_de_escucha(), port=3000, log_level="info")

@@ -117,60 +117,49 @@ CS=3); al deslinkear el equipo **no** restaura los valores previos de cada canal
 
 ## Encender y apagar el servicio
 
-### La app de barra de menú (recomendado): estado + encendido, sin HTTP obligatorio
+### La app de barra de menú: estado y comandos **sin abrir puertos**
 
-`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj y es **el proceso que existe fuera del
-servicio**, así que es el único que puede decir `offline`. Hace tres cosas:
+`EVO 16 Remote.app` (código en `menubar/`) es el proceso que existe fuera del servicio, así que es el
+único que puede decir `offline`. Y no necesita ningún puerto para eso: publica el estado en un
+**archivo** y acepta **comandos por archivo** (o por esquema de URL). El servicio, además, se apaga
+con la app.
 
-1. **Muestra el estado** en el propio ítem (relleno = equipo OK, hueco = problema) y en el menú:
-   *estado en vivo* · *API :3100* · *agente del servicio* · **Encender** · **Apagar** ·
-   *Abrir interfaz* · *Instalar o actualizar el agente* · *Salir*.
-2. **Sirve una API local** en `http://127.0.0.1:3100` (sólo loopback), con la misma forma de
-   respuesta que el launcher: `GET /api/status` · `POST /api/start` · `POST /api/stop` ·
-   `GET /api/logs?n=80`.
-3. **Escribe el estado en un archivo** (lo más cómodo para un cliente local):
-   `~/Library/Application Support/EVO16Remote/estado.json`
+| canal | cómo se usa | notas |
+| --- | --- | --- |
+| **`estado.json`** | leer el archivo | reescrito cada 2 s; `updatedAtEpoch` dice cuándo (si está viejo, la app no está corriendo) |
+| **`comando.json`** | escribir `{"accion": "start", "id": 1}` | el resultado sale en `estado.json` como `commandResult` con el mismo `id` |
+| **`evo16remote://`** | `open -g "evo16remote://start"` | fire-and-forget, sin archivos |
 
-Y si falta el agente de launchd del servicio, **lo instala sola al arrancar**: no hay que correr nada
-en la Terminal.
+Ruta de los dos archivos: `~/Library/Application Support/EVO16Remote/`.
+Acciones válidas: `start`, `stop`, `status`, `api-http-on`, `api-http-off`, `exponer-red-on`,
+`exponer-red-off`, `salir`.
 
-#### Opción A (la más simple para RLM / ReaScript): leer el archivo
-
-```lua
-local ruta = os.getenv("HOME") .. "/Library/Application Support/EVO16Remote/estado.json"
-local f = io.open(ruta, "r"); if not f then return end
-local txt = f:read("*a"); f:close()
--- JSON con: state ("connected" | "usb_busy" | "helper_down" | "device_unreachable" | "not_ready" |
--- "offline"), ok, stateDetail, service, device, apiPort, updatedAtEpoch
-```
-
-Sin puertos de por medio, y si la app se cerró `updatedAtEpoch` queda viejo — eso **es** el `offline`.
-
-#### Opción B: por HTTP
-
-```bash
-curl -s http://127.0.0.1:3100/api/status | jq '{state, ok, service, stateDetail}'
-curl -X POST http://127.0.0.1:3100/api/start
-curl -X POST http://127.0.0.1:3100/api/stop
-```
-
-#### Opción C: por URL, sin parsear nada
-
-```bash
-open -g "evo16remote://start"     # enciende (y abre la app si no estaba corriendo)
-open -g "evo16remote://stop"      # apaga, liberando el USB
-open -g "evo16remote://status"    # sólo refresca el estado
-```
+Desde un ReaScript:
 
 ```lua
-os.execute('open -g "evo16remote://start"')   -- ReaScript
+-- leer el estado (sin HTTP, sin puertos)
+local f = io.open(os.getenv("HOME") .. "/Library/Application Support/EVO16Remote/estado.json")
+if f then local txt = f:read("*a"); f:close() end
+-- pedirle algo
+local g = io.open(os.getenv("HOME") .. "/Library/Application Support/EVO16Remote/comando.json", "w")
+g:write('{"accion":"start","id":' .. os.time() .. '}'); g:close()
 ```
 
-Después de encender hay que esperar ~5-10 s a que el servicio abra el dispositivo: la API de la app
-espera y devuelve el estado ya resuelto, y el archivo se reescribe cada 2 s.
+#### Opcionales (menú, apagadas por defecto)
 
-Compilar/instalar: `./menubar/build.sh --open` (Command Line Tools; queda en `~/Applications`). Para
-que arranque con el sistema, agregala a «Iniciar sesión».
+- **API HTTP en `http://127.0.0.1:3100`** — misma forma de respuesta que el launcher:
+  `GET /api/status` · `POST /api/start` · `POST /api/stop` · `GET /api/logs?n=80`.
+- **Exponer la interfaz (`:3000`) en la red (LAN/Tailscale)** — por defecto sólo `127.0.0.1`. Se
+  aplica al reiniciar el servicio. (El servicio lee esa preferencia de `prefs.json`, la misma que
+  escribe la app, o `EVO16_HOST` para el agente de launchd.)
+
+Compilar/instalar: `./menubar/build.sh --open` (Command Line Tools; queda en `~/Applications`).
+
+#### Cierre y vigilancia
+
+Al cerrarse la app, el servicio se apaga y libera el USB. Y por si la app muere de golpe, el servicio
+la **vigila**: si el PID de `app.pid` ya no existe, se apaga solo en unos segundos. Sin app (servicio
+lanzado a mano), no se apaga solo.
 
 ### Alternativa sin app: launcher HTTP en el puerto 3100
 

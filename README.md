@@ -254,25 +254,34 @@ un comando. Es de **una sola vía**: pisa el estado guardado antes y no se puede
 desde la API; se verifica **ciclando la energía** del equipo (al volver debe cargar ese estado).
 En la UI es el botón «GUARDAR EN LA INTERFAZ».
 
-## App de barra de menú
+## App de barra de menú (el único proceso que vive siempre)
 
-`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj, sin ícono en el Dock: muestra el
-estado en vivo, enciende/apaga el servicio, **sirve la API local del `:3100`** (es el único que puede
-reportar `offline`) y **escribe el mismo estado en un archivo** para clientes locales que no quieran
-HTTP: `~/Library/Application Support/EVO16Remote/estado.json`. Si falta el agente de launchd del
-servicio, **lo instala sola**.
+`EVO 16 Remote.app` (código en `menubar/`) vive junto al reloj, sin ícono en el Dock. Es el único
+punto de control del ciclo de vida: muestra el estado en vivo, enciende/apaga el servicio y —por
+pedido— **al cerrarse la app se cierra el servicio y se libera el USB**.
 
-Tres formas de usarla desde otra app (detalle en [`docs/AGENT-API.md`](docs/AGENT-API.md)):
+### Canales para otras apps: por defecto **ninguno abre un puerto**
 
-```bash
-# 1) leer el archivo (lo más simple para un ReaScript: io.open)
-# 2) HTTP local
-curl -s http://127.0.0.1:3100/api/status
-# 3) esquema de URL
-open -g "evo16remote://start"     # o stop
-```
+| canal | cómo se usa | para qué |
+| --- | --- | --- |
+| **`estado.json`** | leer `~/Library/Application Support/EVO16Remote/estado.json` | el estado completo, reescrito cada 2 s |
+| **`comando.json`** | escribirle `{"accion": "start", "id": 1}` | pedirle encender/apagar/consultar/… |
+| **`evo16remote://`** | `open -g "evo16remote://start"` | lo mismo, sin archivos (fire-and-forget) |
 
-Compilar/instalar: `./menubar/build.sh --open` (Command Line Tools; queda en `~/Applications`).
+`comando.json` acepta: `start`, `stop`, `status`, `api-http-on`, `api-http-off`, `exponer-red-on`,
+`exponer-red-off`, `salir`. El resultado queda en `estado.json` como
+`commandResult: {accion, id, ok}` con el mismo `id` que mandaste.
+
+### Opciones del menú (las dos **apagadas** por defecto)
+
+- **Abrir la API HTTP en `:3100`** — misma forma de respuesta que `launcher.py`, para curl/HTTP.
+- **Exponer la interfaz (`:3000`) en la red (LAN/Tailscale)** — por defecto el servicio escucha sólo
+  en `127.0.0.1`. Se aplica **al reiniciar** el servicio (Apagar y Encender desde el menú).
+
+### Vigilante
+
+El servicio vigila a la app: si desaparece (incluso si la matan de golpe), se apaga solo en unos
+segundos y libera el USB. Si no hay app (servicio lanzado a mano), no se apaga solo.
 
 ## Encender y apagar por API (alternativa sin app)
 
