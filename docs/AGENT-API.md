@@ -47,7 +47,7 @@ curl -X POST http://127.0.0.1:3000/api/reconnect
 | GET | `/api/health` | Estado **en vivo** + **estado de alto nivel** (ver abajo) |
 | GET | `/api/info` | Mapa de capacidades (lo que está en esta tabla) |
 | GET | `/api/status` | Los 24 canales (`gain`, `phantom`, `mute`, `instrument`, `linked`, `linkPair`) + `mainVolume` |
-| POST | `/api/reconnect` | Reabre el dispositivo (usar después de cerrar la app oficial) |
+| POST | `/api/reconnect` | Reabre el dispositivo (usar después de cerrar la app oficial). Devuelve `{"service": "ok", "device": {...}}` — el estado vive en `device`, no en la raíz |
 
 ### Estado de alto nivel (lo que debe mirar un cliente de terceros)
 
