@@ -577,6 +577,8 @@ class Evo16Service:
             "helper": self._proc is not None and self._proc.poll() is None,
             "entity": f"0x{self.MAIN_VOL_UNIT:02X}",
         }
+        if getattr(self, "_reconnecting", False):
+            info["reconnecting"] = True            # lo usa health_state para el estado "reconnecting"
         try:
             info["mainVolume"] = self.get_main_volume()
             info["connected"] = True
@@ -593,17 +595,21 @@ class Evo16Service:
         al arrancar, así que si el equipo estaba ocupado se queda sin dispositivo hasta esto.
         """
         import time as _t
+        self._reconnecting = True                  # /api/health lo reporta como "reconnecting"
         try:
-            self.disconnect()
-        except Exception:
-            pass
-        _t.sleep(0.6)
-        self._connected = False
-        try:
-            self.connect()
-        except Exception as e:                     # noqa: BLE001
-            return {"connected": False, "error": f"no se pudo abrir el dispositivo: {e}"}
-        return self.health()
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            _t.sleep(0.6)
+            self._connected = False
+            try:
+                self.connect()
+            except Exception as e:                 # noqa: BLE001
+                return {"connected": False, "error": f"no se pudo abrir el dispositivo: {e}"}
+            return self.health()
+        finally:
+            self._reconnecting = False
 
     # ── PERFILES (capturar / inyectar el estado de los preamps) ──
     # Se apoya en get_all_status() para capturar y en los setters para inyectar. El formato de

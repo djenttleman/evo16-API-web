@@ -132,9 +132,16 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif ruta == "/api/status":
             h = service_health()
+            # El launcher es el ÚNICO que puede decir "offline": vive fuera del servicio, así que sabe
+            # cuándo no hay nadie escuchando. Es el estado que le falta a un cliente externo.
+            estado = (h or {}).get("state") or ("offline" if not h else "not_ready")
             self._send(200, {
                 "launcher": "ok",
                 "service": "running" if h else "stopped",
+                "state": estado,
+                "ok": bool((h or {}).get("ok", False)),
+                "stateDetail": (h or {}).get("stateDetail") or (
+                    "el servicio no está corriendo: POST /api/start" if not h else ""),
                 "agentInstalled": agent_loaded(),
                 "device": (h or {}).get("device"),
                 "audientAppRunning": (h or {}).get("audientAppRunning"),

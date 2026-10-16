@@ -277,6 +277,10 @@ Si se prefiere HTTP, `launcher.py` expone `GET /api/status` · `POST /api/start`
 con `~/bin/evo16-remote launcher-install`. El servicio, por su lado, expone su propio
 `POST /api/service/stop`.
 
+Es además el **único** que puede decir `state: "offline"`: vive fuera del servicio, así que sabe
+cuándo no hay nadie escuchando. Un cliente externo puede tomar de ahí un estado único para todo
+(`connected` / `usb_busy` / `helper_down` / `device_unreachable` / `not_ready` / **`offline`**).
+
 ## Medidores en tiempo real
 
 `GET /api/meters` devuelve los niveles **en dB** de los 24 canales de entrada y de las salidas

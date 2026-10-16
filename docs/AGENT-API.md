@@ -6,7 +6,7 @@ API HTTP para controlar una **Audient EVO 16** por USB. La misma URL sirve la in
 - **Docs interactivas**: `http://127.0.0.1:3000/docs` (OpenAPI generado por FastAPI).
 - **Código**: `~/dev/evo16-web` — la memoria del protocolo está en la skill `audient-usb-control`.
 
-## Encarecer el servicio (desde una shell normal, NO desde dentro de Hermes)
+## Encender el servicio (desde una shell normal, NO desde dentro de Hermes)
 
 ```bash
 evo16-remote start      # arranca (launchd, on-demand)
@@ -44,10 +44,43 @@ curl -X POST http://127.0.0.1:3000/api/reconnect
 
 | Método | Ruta | Devuelve |
 |---|---|---|
-| GET | `/api/health` | Estado **en vivo**: `device.connected` (hace una lectura real al equipo), `device.helper`, `device.mainVolume`, `audientAppRunning`, `urls`, `uptimeSeconds` |
+| GET | `/api/health` | Estado **en vivo** + **estado de alto nivel** (ver abajo) |
 | GET | `/api/info` | Mapa de capacidades (lo que está en esta tabla) |
 | GET | `/api/status` | Los 24 canales (`gain`, `phantom`, `mute`, `instrument`, `linked`, `linkPair`) + `mainVolume` |
 | POST | `/api/reconnect` | Reabre el dispositivo (usar después de cerrar la app oficial) |
+
+### Estado de alto nivel (lo que debe mirar un cliente de terceros)
+
+`GET /api/health` trae la verdad cruda **y** cuatro campos para que un cliente externo (RLM, una
+extensión de REAPER) no tenga que interpretar nada:
+
+```json
+{
+  "service": "ok", "version": "1.1.1", "uptimeSeconds": 58.7,
+  "state": "connected", "ok": true,
+  "stateDetail": "el equipo responde", "stateSeconds": 122.4,
+  "audientAppRunning": false,
+  "device": { "connected": true, "helper": true, "entity": "0x36", "mainVolume": -30.72 }
+}
+```
+
+| `state` | Cuándo | Qué conviene hacer |
+|---|---|---|
+| `connected` | el equipo responde (`ok: true`) | usar la API normalmente |
+| `usb_busy` | la app oficial EVO Control tiene el USB | cerrarla y `POST /api/reconnect` |
+| `helper_down` | el helper USB murió | `POST /api/reconnect` |
+| `device_unreachable` | el helper vive, el equipo no contesta | revisar cable / encendido |
+| `reconnecting` | hay un `reconnect` en curso | esperar |
+| `not_ready` | el servicio todavía no inicializó el dispositivo | esperar un segundo |
+| `offline` | **sólo lo reporta el launcher del :3100** | `POST /api/start` |
+
+`ok` es `true` **sólo** con `connected`. `stateSeconds` dice hace cuánto está así, para que un cliente
+que consulta cada 2 s no muestre parpadeo en sus textos. `offline` no puede venir del propio servicio
+(si está caído, no hay quién conteste): eso lo da el launcher, que vive fuera:
+
+```bash
+curl -s http://127.0.0.1:3100/api/status | jq '{state, ok, service, stateDetail}'
+```
 
 `/api/status` es la llamada de lectura habitual; la UI la marca cada 2 s. **No bajarlo:** cada
 llamada son ~70 lecturas USB al equipo.

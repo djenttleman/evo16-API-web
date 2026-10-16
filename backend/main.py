@@ -289,7 +289,9 @@ class VolumeRequest(BaseModel):
     db: float
 
 # ── Salud / info / reconexión: pensados para que los consuma un agente (ver docs/AGENT-API.md) ──
-APP_VERSION = "1.1.0"
+from health_state import state_for          # estado de alto nivel (ver backend/health_state.py)
+
+APP_VERSION = "1.1.1"
 STARTED_AT = time.time()
 
 def _app_running() -> bool:
@@ -318,8 +320,10 @@ def _urls() -> dict:
 async def health():
     """Estado EN VIVO del servicio y del equipo, en un solo llamado.
 
-    Devuelve: si el helper responde, si el EQUIPO contesta de verdad (hace una lectura real),
-    si la app oficial está abierta (bloquea el control), las URLs y la antigüedad del proceso.
+    Para clientes de terceros trae además un **estado de alto nivel** que no hay que interpretar:
+    `state` (ver backend/health_state.py), `ok`, `stateDetail` y `stateSeconds` (desde cuándo está
+    así, para no parpadear). El resto es la verdad cruda: si el helper responde, si el EQUIPO
+    contesta de verdad (lectura real), si la app oficial tiene el USB, las URLs y la antigüedad.
     """
     dev: dict = {"connected": False, "error": "servicio sin inicializar"}
     if service is not None:
@@ -327,13 +331,15 @@ async def health():
             dev = service.health()
         except Exception as e:                     # noqa: BLE001
             dev = {"connected": False, "error": str(e)}
+    app_running = _app_running()
     return {
         "service": "ok",
         "version": APP_VERSION,
         "uptimeSeconds": round(time.time() - STARTED_AT, 1),
         "urls": _urls(),
-        "audientAppRunning": _app_running(),
+        "audientAppRunning": app_running,
         "device": dev,
+        **state_for(dev, app_running),             # state / ok / stateDetail / stateSeconds
     }
 
 @app.post("/api/reconnect")

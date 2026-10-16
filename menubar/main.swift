@@ -72,14 +72,21 @@ final class App: NSObject, NSApplicationDelegate {
             var det = "servicio apagado"
             if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
                 let dev = (j["device"] as? [String: Any]) ?? [:]
-                nuevoUp = (dev["connected"] as? Bool) ?? false
-                if nuevoUp {
+                let estado = (j["state"] as? String) ?? ""
+                nuevoUp = (j["ok"] as? Bool) ?? ((dev["connected"] as? Bool) ?? false)
+                switch estado {
+                case "connected":
                     let mv = (dev["mainVolume"] as? NSNumber)?.doubleValue ?? 0
                     det = String(format: "equipo OK · main %.1f dB", mv)
-                } else {
-                    det = "servicio arriba · equipo no: \((dev["error"] as? String) ?? "?")"
+                case "usb_busy":           det = "USB ocupado por la app oficial"
+                case "helper_down":        det = "helper caído · reconectar"
+                case "device_unreachable": det = "equipo no contesta"
+                case "reconnecting":       det = "reconectando…"
+                default:                   det = "servicio arriba · equipo no: \((dev["error"] as? String) ?? "?")"
                 }
-                if (j["audientAppRunning"] as? Bool) == true { det += " · ⚠️ app oficial abierta" }
+                if (j["audientAppRunning"] as? Bool) == true && estado != "usb_busy" {
+                    det += " · ⚠️ app oficial abierta"
+                }
             }
             DispatchQueue.main.async {
                 self.up = nuevoUp
