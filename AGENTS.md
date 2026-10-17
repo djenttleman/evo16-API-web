@@ -24,3 +24,6 @@
   For native/packaging changes build with `EVO16_PYTHON=<python> ./menubar/build.sh --release`,
   run the service `--self-check` and verify the app signature. Do not overwrite the installed app
   while testing. Public signing/notarization requires the publisher's credentials.
+
+- User-facing Spanish must be neutral (no voseo). The menu status and icon tooltip show only
+  `Conectado` or `Desconectado`; keep detailed errors in Preferences/diagnostics and the API.

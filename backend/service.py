@@ -546,7 +546,7 @@ class Evo16Service:
     def set_clock_source(self, value: int) -> dict:
         """Cambia la fuente de reloj (1=internal, 2=optical1, 3=optical2)."""
         if value not in self.CLOCK_NAMES:
-            raise ValueError("Fuente inválida: usá 1 (internal), 2 (optical1) o 3 (optical2).")
+            raise ValueError("Fuente inválida: usa 1 (internal), 2 (optical1) o 3 (optical2).")
         r = self._send({
             "type": "set_cur",
             "wValue": (self.CLOCK_CS << 8) | 0,
@@ -604,7 +604,7 @@ class Evo16Service:
         except Exception as e:                     # noqa: BLE001
             info["error"] = str(e)
             info["hint"] = ("Si la app oficial EVO Control está abierta, es la dueña del USB: "
-                            "cerrala y llamá a /api/reconnect.")
+                            "ciérrala y solicita una reconexión.")
         return info
 
     def reconnect(self) -> dict:

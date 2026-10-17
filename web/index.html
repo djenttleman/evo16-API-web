@@ -20,7 +20,7 @@
   <p id="connection-info" role="status" class="connection-info"></p>
   <form id="auth-form" class="auth-form" hidden>
     <label for="api-credential">Credencial de conexión</label>
-    <p>Copiala desde Preferencias de EVO 16 Remote en el Mac conectado a la interfaz.</p>
+    <p>Cópiala desde Preferencias de EVO 16 Remote en el Mac conectado a la interfaz.</p>
     <input id="api-credential" type="password" autocomplete="off" required>
     <button class="pbtn" type="submit">CONECTAR</button>
     <span id="auth-error" role="alert"></span>
@@ -43,12 +43,12 @@
     <input id="main-volume" class="vol-range" type="range" min="0" max="100" step="1" value="0">
     <span id="main-volume-val" class="vol-val">0 / 100</span>
     <button id="store-standalone" class="pbtn">GUARDAR EN LA INTERFAZ</button>
-    <span class="vol-hint">escala de la pantalla del equipo (0 = silencio, 10 = −96 dB, 100 = 0 dB) · se manda en vivo al deslizar · «GUARDAR EN LA INTERFAZ» copia TODO el estado a la memoria interna del equipo (una sola vía, para uso standalone)</span>
+    <span class="vol-hint">escala de la pantalla del equipo (0 = silencio, 10 = −96 dB, 100 = 0 dB) · se aplica al mover el control · «GUARDAR EN LA INTERFAZ» copia TODO el estado a la memoria interna del equipo (sobrescribe el estado anterior, para el modo autónomo)</span>
   </div>
   <div id="rack" class="rack"></div>
   <footer id="device-name" class="dim">—</footer>
 </div>
 <script src="gain-scale.js?v=21"></script>
-<script src="app.js?v=21"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>

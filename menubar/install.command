@@ -14,4 +14,4 @@ if [ -f "$HERE/../bin/evo16-remote" ]; then
     chmod +x "$HOME/bin/evo16-remote"
 fi
 printf 'Instalada: %s\n' "$DEST"
-printf 'Abrí la app. En Preferencias están la conexión, la integración y el diagnóstico.\n'
+printf 'Abre la app. En Preferencias están la conexión, la integración y el diagnóstico.\n'

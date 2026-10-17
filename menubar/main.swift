@@ -55,7 +55,7 @@ final class LifecycleAPI {
                 let text: String
                 switch state {
                 case .ready: text = "API de encendido y apagado disponible en 127.0.0.1:\(lifecyclePort)"
-                case .failed: text = "No se pudo abrir el puerto 3100. Revisá si otra app lo utiliza."
+                case .failed: text = "No se pudo abrir el puerto 3100. Revisa si otra app lo utiliza."
                 default: return
                 }
                 DispatchQueue.main.async { self?.changed?(text) }
@@ -181,7 +181,7 @@ final class App: NSObject, NSApplicationDelegate {
     private func buildMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
-        stateItem = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
+        stateItem = NSMenuItem(title: "Desconectado", action: nil, keyEquivalent: "")
         stateItem.isEnabled = false; menu.addItem(stateItem); menu.addItem(.separator())
         openItem = NSMenuItem(title: "Abrir interfaz", action: #selector(openUI), keyEquivalent: "")
         powerItem = NSMenuItem(title: "Encender servicio", action: #selector(togglePower), keyEquivalent: "")
@@ -240,7 +240,7 @@ final class App: NSObject, NSApplicationDelegate {
             content.addArrangedSubview(label("Conexión", bold: true))
             networkCheck = NSButton(checkboxWithTitle: "Permitir conexiones desde la red", target: self, action: #selector(toggleNetwork))
             content.addArrangedSubview(networkCheck)
-            content.addArrangedSubview(label("Por defecto, solo este Mac puede conectarse. Cambiar esta opción reinicia el servicio. Para acceder desde otro equipo necesitás la credencial API; usá una red privada o Tailscale."))
+            content.addArrangedSubview(label("Por defecto, solo este Mac puede conectarse. Cambiar esta opción reinicia el servicio. Para acceder desde otro equipo necesitas la credencial API; usa una red privada o Tailscale."))
             content.addArrangedSubview(label("Integración con otras apps", bold: true))
             content.addArrangedSubview(label("API de control: http://127.0.0.1:\(servicePort)\nLa app debe permanecer abierta para controlar el equipo."))
             httpCheck = NSButton(checkboxWithTitle: "Permitir encender y apagar por HTTP", target: self, action: #selector(toggleHTTP))
@@ -397,12 +397,13 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func render() {
         guard statusItem != nil else { return }
-        stateItem.title = (testSession ? "PRUEBA · " : "") + detail
+        let connectionStatus = serviceUp && deviceOK ? "Conectado" : "Desconectado"
+        stateItem.title = connectionStatus
         powerItem.title = desiredRunning ? "Apagar servicio" : "Encender servicio"
         openItem.isEnabled = serviceUp
-        statusItem.button?.image = NSImage(systemSymbolName: deviceOK ? "waveform.circle.fill" : "waveform.circle", accessibilityDescription: "EVO 16: \(detail)")
+        statusItem.button?.image = NSImage(systemSymbolName: deviceOK ? "waveform.circle.fill" : "waveform.circle", accessibilityDescription: "EVO 16: \(connectionStatus)")
         statusItem.button?.image?.isTemplate = true
-        statusItem.button?.toolTip = "EVO 16 Remote · \(detail)"
+        statusItem.button?.toolTip = connectionStatus
         httpCheck?.state = httpEnabled ? .on : .off
         networkCheck?.state = exposeNetwork ? .on : .off
         diagnostics?.stringValue = (testSession ? "PRUEBA · " : "") + detail

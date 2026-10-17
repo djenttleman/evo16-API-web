@@ -46,7 +46,7 @@ case "$ACTION" in
     url) echo 'http://127.0.0.1:3000' ;;
     logs) tail -n 80 "$LOG" ;;
     install|launcher-install)
-        echo 'Los agentes launchd y el launcher separado están deprecados. Usá menubar/install.command.' >&2
+        echo 'Los agentes launchd y el launcher separado están deprecados. Usa menubar/install.command.' >&2
         exit 1 ;;
     *) echo 'Uso: evo16-remote start|stop|restart|status|health|info|url|logs|preferences' >&2; exit 1 ;;
 esac

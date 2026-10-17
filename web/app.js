@@ -453,7 +453,7 @@ async function loadPresets() {
 function bindPresets() {
   document.getElementById('preset-apply').addEventListener('click', async () => {
     const name = selectedPreset();
-    if (!name) return presetInfo('Elegí un perfil primero.', 'bad');
+    if (!name) return presetInfo('Selecciona un perfil primero.', 'bad');
     presetInfo(`Aplicando «${name}»…`);
     try {
       const r = await apiFetch(`${API}/presets/${encodeURIComponent(name)}/apply`, { method: 'POST' });
@@ -483,7 +483,7 @@ function bindPresets() {
 
   document.getElementById('preset-export').addEventListener('click', async () => {
     const name = selectedPreset();
-    if (!name) return presetInfo('Elegí un perfil primero.', 'bad');
+    if (!name) return presetInfo('Selecciona un perfil primero.', 'bad');
     try {
       const response = await apiFetch(`${API}/presets/${encodeURIComponent(name)}/export`, { method: 'POST' });
       const url = URL.createObjectURL(await response.blob());
@@ -516,7 +516,7 @@ function bindPresets() {
 
   document.getElementById('preset-delete').addEventListener('click', async () => {
     const name = selectedPreset();
-    if (!name) return presetInfo('Elegí un perfil primero.', 'bad');
+    if (!name) return presetInfo('Selecciona un perfil primero.', 'bad');
     if (!confirm(`¿Borrar el perfil «${name}»? Se elimina el archivo del disco.`)) return;
     try {
       const r = await apiFetch(`${API}/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
@@ -571,7 +571,7 @@ function bindStandalone() {
   if (!btn) return;
   btn.addEventListener('click', async () => {
     const ok = confirm('¿Guardar el estado ACTUAL en la memoria de la interfaz?\n\n' +
-      'PISA lo que haya guardado y no se puede deshacer desde acá.\n\n' +
+      'Se reemplazará el estado guardado. Esta acción no se puede deshacer desde la app.\n\n' +
       'Es el estado que el equipo usará cuando trabaje solo, sin computadora.');
     if (!ok) return;
     const info = document.getElementById('preset-info');
@@ -581,7 +581,7 @@ function bindStandalone() {
       const d = await r.json();
       if (info) {
         info.textContent = r.ok
-          ? 'Guardado en la interfaz ✓ — verificalo ciclando la energía del equipo'
+          ? 'Guardado en la interfaz ✓ — compruébalo apagando y volviendo a encender el equipo'
           : (d.detail || 'No se pudo guardar.');
         info.className = 'preset-info ' + (r.ok ? 'ok' : 'bad');
       }
